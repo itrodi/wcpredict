@@ -21,6 +21,9 @@ Every prediction row carries a `pipeline` discriminator; the UI has a global mod
 identity-mapping health page (`/admin/health`). If TheStatsAPI breaks, the engine degrades
 to Pipeline A automatically.
 
+**Full documentation lives in [`docs/`](docs/README.md)** — architecture, database, engine
+math, frontend, and operations/runbook.
+
 ## Architecture (two planes)
 
 - **Compute plane** (`engine/`, Python, GitHub Actions cron): ingests fixtures/results from
