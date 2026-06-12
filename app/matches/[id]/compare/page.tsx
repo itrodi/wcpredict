@@ -2,20 +2,18 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import UpdatedBadge from "@/components/UpdatedBadge";
-import { kickoffFmt, MARKET_LABELS, pct, SELECTION_LABELS } from "@/lib/format";
+import { kickoffFmt, pct } from "@/lib/format";
+import { MARKET_ORDER, marketLabel, selectionLabel } from "@/lib/markets";
 import { supabaseServer } from "@/lib/supabase/server";
 import type { Fixture, MatchPrediction } from "@/lib/types";
 
 export const revalidate = 300;
 
-const DISAGREE = 0.05; // highlight where A and B disagree by >5 points (spec v4 §6.2)
+const DISAGREE = 0.05; // highlight where the models disagree by >5 points
 
-const MARKET_ORDER = [
-  "1x2", "ou25", "btts", "ht_1x2", "ou05_1h", "ou15_1h",
-  "corners_o85", "corners_o95", "corners_o105",
-];
+const COMPARE_MARKETS = MARKET_ORDER.filter((m) => m !== "cs" && m !== "htft");
 
-/** The flagship dual-pipeline page: Pipeline A | Pipeline B | Market, side by side. */
+/** Side-by-side model comparison: Site model (statsapi) | Baseline (free) | Market. */
 export default async function ComparePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const fixtureId = Number(id);
@@ -41,15 +39,18 @@ export default async function ComparePage({ params }: { params: Promise<{ id: st
     .in("pipeline", ["free", "statsapi"]);
   const rows = (preds as MatchPrediction[] | null) ?? [];
 
-  const a = new Map(rows.filter((r) => r.pipeline === "free").map((r) => [`${r.market}:${r.selection}`, r]));
-  const b = new Map(rows.filter((r) => r.pipeline === "statsapi").map((r) => [`${r.market}:${r.selection}`, r]));
-  const keys = [...new Set([...a.keys(), ...b.keys()])];
+  const site = new Map(
+    rows.filter((r) => r.pipeline === "statsapi").map((r) => [`${r.market}:${r.selection}`, r])
+  );
+  const base = new Map(
+    rows.filter((r) => r.pipeline === "free").map((r) => [`${r.market}:${r.selection}`, r])
+  );
+  const keys = [...new Set([...site.keys(), ...base.keys()])];
+  const markets = COMPARE_MARKETS.filter((m) => keys.some((k) => k.startsWith(`${m}:`)));
 
-  const markets = MARKET_ORDER.filter((m) => keys.some((k) => k.startsWith(`${m}:`)));
-
-  // de-vigged market prob recovered from edge = p_model - p_market (1X2 only in v1)
+  // de-vigged market prob recovered from edge = p_model - p_market
   const marketP = (key: string) => {
-    const r = a.get(key) ?? b.get(key);
+    const r = base.get(key) ?? site.get(key);
     return r?.edge != null ? Number(r.probability) - Number(r.edge) : null;
   };
 
@@ -90,26 +91,26 @@ export default async function ComparePage({ params }: { params: Promise<{ id: st
             <table className="w-full text-sm">
               <thead className="bg-pitch-800 text-left text-xs uppercase tracking-wide text-zinc-500">
                 <tr>
-                  <th className="px-3 py-2.5">{MARKET_LABELS[market] ?? market}</th>
-                  <th className="px-3 py-2.5 text-right">Free model</th>
-                  <th className="px-3 py-2.5 text-right">Stats model</th>
+                  <th className="px-3 py-2.5">{marketLabel(market)}</th>
+                  <th className="px-3 py-2.5 text-right">Site model</th>
+                  <th className="px-3 py-2.5 text-right">Baseline</th>
                   <th className="px-3 py-2.5 text-right">Market</th>
-                  <th className="px-3 py-2.5 text-right">A − B</th>
+                  <th className="px-3 py-2.5 text-right">Site − Base</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-pitch-800 bg-pitch-900">
                 {sels.map((sel) => {
                   const key = `${market}:${sel}`;
-                  const pa = a.get(key)?.probability;
-                  const pb = b.get(key)?.probability;
-                  const pm = market === "1x2" ? marketP(key) : null;
-                  const diff = pa != null && pb != null ? Number(pa) - Number(pb) : null;
+                  const ps = site.get(key)?.probability;
+                  const pb = base.get(key)?.probability;
+                  const pm = marketP(key);
+                  const diff = ps != null && pb != null ? Number(ps) - Number(pb) : null;
                   const hot = diff != null && Math.abs(diff) > DISAGREE;
                   return (
                     <tr key={sel} className={hot ? "bg-amber-500/5" : undefined}>
-                      <td className="px-3 py-2 text-zinc-300">{SELECTION_LABELS[sel] ?? sel}</td>
+                      <td className="px-3 py-2 text-zinc-300">{selectionLabel(market, sel)}</td>
                       <td className="px-3 py-2 text-right font-mono text-zinc-200">
-                        {pa != null ? pct(Number(pa)) : "–"}
+                        {ps != null ? pct(Number(ps)) : "–"}
                       </td>
                       <td className="px-3 py-2 text-right font-mono text-zinc-200">
                         {pb != null ? pct(Number(pb)) : "–"}

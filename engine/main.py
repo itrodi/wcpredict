@@ -7,6 +7,7 @@ working on A alone. Run with: python -m engine.main
 """
 import sys
 import traceback
+from datetime import datetime, timezone
 
 from . import (
     blend,
@@ -15,10 +16,14 @@ from . import (
     ingest_fd,
     ingest_odds,
     ingest_statsapi,
+    ingest_statsapi_extra,
     match_model,
     match_model_b,
+    ops,
+    picks,
     ratings,
     ratings_xg,
+    signals,
     simulate,
     write_db,
 )
@@ -43,6 +48,7 @@ def main():
     _stage("ingest_odds", ingest_odds.run)                    # shared: h2h odds for BOTH pipelines
     if statsapi_enabled:
         _stage("ingest_statsapi", ingest_statsapi.run)        # B: xmap, match_stats, lineups
+        _stage("ingest_statsapi_extra", ingest_statsapi_extra.run)  # B: odds probe, shotmaps, players
 
     # ---- ratings ----
     _stage("ratings", ratings.run)                            # A: results-Elo
@@ -68,11 +74,36 @@ def main():
         if odds_b:
             _stage("write_todds_statsapi", lambda: write_db.upsert_tournament_odds(odds_b))
 
-    # ---- scoreboard + housekeeping ----
+    # ---- scoreboard, signals, picks + housekeeping ----
     _stage("compare", compare.run)
+    if statsapi_enabled:
+        _stage("signals", signals.run)                        # team + referee signals (v4.1 §5.2/5.4)
+    _stage("picks", picks.run)                                # picks AFTER compare (v4.1 §4.1)
     _stage("prune_snapshots", ingest_odds.prune_snapshots)
     if statsapi_enabled:
         _stage("prune_payloads", ingest_statsapi.prune_payloads)
+
+    # ---- CI-style coverage assertion (v4.1 §1.2) + run stamp ----
+    def coverage():
+        from .db import sb
+        n_fx = len(sb().table("fixtures").select("id").execute().data)
+        n_pred = len({
+            r["fixture_id"]
+            for r in sb().table("match_predictions").select("fixture_id")
+            .eq("pipeline", config.PIPELINE_FREE).execute().data
+        })
+        ok = n_fx >= ops.EXPECTED_FIXTURES
+        ops.set_status("pipeline_a_coverage", {
+            "fixtures": n_fx, "fixtures_with_free_predictions": n_pred,
+            "expected": ops.EXPECTED_FIXTURES, "ok": ok,
+        })
+        if not ok:
+            print(f"[main] ERROR: only {n_fx}/{ops.EXPECTED_FIXTURES} fixtures in DB — "
+                  f"see /admin/health")
+    _stage("coverage_assertion", coverage)
+    _stage("last_refresh", lambda: ops.set_status(
+        "last_refresh", {"at": datetime.now(timezone.utc).isoformat()}
+    ))
     print("[main] run complete")
 
 

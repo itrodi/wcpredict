@@ -6,31 +6,46 @@ Stack: Next.js 15 + TypeScript + Tailwind CSS + Recharts +
 states); a browser singleton (`lib/supabase/client.ts`) is used only for
 Realtime subscriptions.
 
-## Pipeline selection (`lib/pipeline.ts`)
+## Two views (`lib/pipeline.ts`, v4.1 Phase 3)
 
-The global model choice is persisted in the URL as `?model=` with values
-`free | statsapi | blend_free | blend_statsapi`, rendered by
-`components/ModelSwitcher.tsx` on every prediction page.
+The UI offers exactly two choices, persisted as `?view=site|baseline`
+(`ModelSwitcher` is a two-pill toggle; legacy `?model=` deep links still
+resolve):
 
-- **Default**: `blend_statsapi` once any rows exist for it, else `free`
-  (resolved per request by `resolvePipeline`).
-- **`basePipeline()`**: blends only exist for 1X2 match rows, so tournament
-  sims and exotic markets resolve `blend_* → free|statsapi`.
-- Every `match_predictions` / `tournament_odds` query filters `pipeline` —
-  omitting the filter double-renders markets (the v4 trap).
+- **Site Picks (default)** → `blend_statsapi` owns 1X2, `statsapi` owns every
+  other market and the sims. Badge: "Site model".
+- **Baseline (free data)** → `blend_free` / `free`. Badge: "Baseline model".
+- **Fallback**: until Pipeline B has rows (or when it's down), Site Picks
+  silently resolves to the free family and the badge says "Baseline model" —
+  never an empty page.
+
+`resolveView()` returns `{view, label, blendPipeline, modelPipeline}`;
+`mergeViewRows()` merges the two pipelines' rows with the blend owning 1X2
+(model row as fallback when no odds exist). Every prediction read filters by
+those pipelines — omitting the filter double-renders markets.
+
+## Market labels (`lib/markets.ts`, v4.1 Phase 2)
+
+The single source of truth for market labels, grouping, ordering, per-market
+selection labels (lines parsed from the key: `ou05_1h` → 0.5) and experimental
+thresholds. **No component derives labels inline.** Guarded by unit tests:
+`npm test` (the `ou05_1h ≠ 2.5` regression test lives there).
 
 ## Pages
 
 | Route | Rendering | Content |
 |---|---|---|
-| `/` | dynamic (searchParams) | next 12 fixtures with 1X2 probability cards (selected pipeline) + last 6 results; model switcher |
-| `/matches/[id]` | dynamic | full market breakdown for the selected pipeline (blend selections merge the base model's exotic markets underneath so the page never empties), match stats panel, lineups panel (pre-match), line-movement chart, link to compare view |
-| `/matches/[id]/compare` | dynamic | **the flagship v4 page**: per market/selection — Free model \| Stats model \| Market (de-vigged, 1X2) \| A−B difference, rows highlighted where the models disagree by >5 points |
+| `/` | dynamic (searchParams) | next-12-fixture digest with 1X2 cards + last 6 results; "All fixtures →" link; view switcher |
+| `/fixtures` | dynamic | **all 104 matches** — pills for All / By group / By matchday plus a team dropdown; view-aware 1X2 cards |
+| `/groups/[code]` | dynamic | live group standings (pts/GD/GF), the group's matches, advance probability per team |
+| `/picks` | ISR 300s + Realtime | Bankers + Value pick cards (label, probability bar, odds, edge, rationale bullets, countdown), the always-visible settled track record (W–L, hit rate, flat-stakes P/L), responsible-gambling banner |
+| `/matches/[id]` | dynamic | **Insights card above markets** (machine-built bullets from team/referee signals, lineup strength, line movement), full market breakdown for the view, stats panel, lineups (with XI rating + key absences), line-movement chart, referee chip, compare link |
+| `/matches/[id]/compare` | dynamic | per market/selection — Site model \| Baseline \| Market (de-vigged) \| difference, rows highlighted where the models disagree by >5 points |
 | `/tournament` | dynamic | Monte Carlo advancement table + top-10 title-odds bar chart for the base pipeline; Realtime |
 | `/teams/[slug]` | dynamic | team header (group, confederation, Elo), advancement probability bars, full fixture path with 1X2 cards |
 | `/models` | ISR 300s | the public scoreboard from `model_scores`: Brier / log-loss / n per pipeline per market, Δ log-loss vs the market baseline (negative = beats the closing line) |
 | `/value` | dynamic | upcoming selections sorted by \|edge\| for the selected pipeline, experimental badges, **responsible-gambling warning lives on this page** |
-| `/admin/health` | no cache | identity-mapping audit: teams/fixtures missing a vendor id, last scoreboard write time |
+| `/admin/health` | no cache | reads `ops_status`: per-vendor fixture counts vs 104, copy-paste-ready unmapped vendor names, odds credits, last refresh, the §5.0 odds-probe verdict, plus the live xmap audit |
 
 Pages reading `searchParams` are server-rendered on demand; `/models` uses ISR
 with `revalidate = 300`.

@@ -7,7 +7,7 @@ Fixtures map by (home, away, kickoff ±3h) and persist into xmap_fixtures.
 """
 from datetime import datetime, timedelta, timezone
 
-from . import config, statsapi
+from . import config, ops, statsapi
 from .aliases import slugify
 from .db import chunked, sb
 from .statsapi import as_list, pick
@@ -28,8 +28,10 @@ def _parse_dt(v):
         return None
 
 
-def _resolve_team_ids(api_teams: list[dict]) -> dict[str, int]:
-    """statsapi team id -> our team id. Persists new mappings into xmap_teams."""
+def _resolve_team_ids(api_teams: list[dict]) -> tuple[dict[str, int], list[str]]:
+    """statsapi team id -> our team id. Persists new mappings into xmap_teams.
+    Also returns the exact vendor names it could NOT map (spec v4.1 §1.2), so
+    /admin/health can show copy-paste-ready alias candidates."""
     teams = sb().table("teams").select("id, slug, name").execute().data
     by_slug = {t["slug"]: t["id"] for t in teams}
     by_name = {t["name"].lower(): t["id"] for t in teams}
@@ -39,6 +41,7 @@ def _resolve_team_ids(api_teams: list[dict]) -> dict[str, int]:
         if x["statsapi_id"]
     }
     resolved: dict[str, int] = {}
+    unmapped: list[str] = []
     new_maps = []
     for at in api_teams:
         sid = str(pick(at, "id", "team_id"))
@@ -50,6 +53,7 @@ def _resolve_team_ids(api_teams: list[dict]) -> dict[str, int]:
         if team_id is None:
             team_id = by_slug.get(slugify(name))      # 3. normalized/alias
         if team_id is None:
+            unmapped.append(name)
             print(f"[ingest_statsapi] !! UNMAPPED TEAM: statsapi id={sid} name={name!r} — skipped, "
                   f"add an alias in engine/aliases.py")
             continue
@@ -58,14 +62,12 @@ def _resolve_team_ids(api_teams: list[dict]) -> dict[str, int]:
     if new_maps:
         sb().table("xmap_teams").upsert(new_maps, on_conflict="team_id").execute()
         print(f"[ingest_statsapi] mapped {len(new_maps)} new teams into xmap_teams")
-    return resolved
+    return resolved, unmapped
 
 
 def _season_matches(comp_id: str, season_id: str) -> list[dict]:
-    return as_list(
-        statsapi.get(f"/competitions/{comp_id}/seasons/{season_id}/matches"),
-        "matches",
-    )
+    # paginated (spec v4.1 §1.1) — a plain get() truncates at the default page size
+    return statsapi.get_all(f"/competitions/{comp_id}/seasons/{season_id}/matches")
 
 
 def _map_fixtures(matches: list[dict], team_map: dict[str, int]) -> dict[str, int]:
@@ -178,8 +180,34 @@ def run():
                 if sid not in seen and pick(t, "name"):
                     seen.add(sid)
                     api_teams.append(t)
-    team_map = _resolve_team_ids(api_teams)
+    team_map, unmapped_names = _resolve_team_ids(api_teams)
     fixture_map = _map_fixtures(matches, team_map)
+
+    # operational truth for /admin/health (spec v4.1 §1.2, §1.4)
+    ops.set_status("fixture_count_statsapi", {
+        "ingested": len(fixture_map),
+        "season_matches": len(matches),
+        "expected": ops.EXPECTED_FIXTURES,
+    })
+    ops.set_status("unmapped_teams", {"statsapi": unmapped_names})
+    if len(matches) and len(matches) < 100:
+        print(f"[ingest_statsapi] ERROR: only {len(matches)} season matches — "
+              f"expected ~{ops.EXPECTED_FIXTURES}; check pagination / season id")
+
+    # referee context (spec v4.1 §5.4) — patch mapped fixtures that lack one
+    ref_patches = 0
+    for m in matches:
+        mid = str(pick(m, "id", "match_id"))
+        ref = pick(m, "referee", "referee_name")
+        if isinstance(ref, dict):
+            ref = pick(ref, "name")
+        if ref and mid in fixture_map:
+            sb().table("fixtures").update({"referee": str(ref)}).eq(
+                "id", fixture_map[mid]
+            ).is_("referee", "null").execute()
+            ref_patches += 1
+    if ref_patches:
+        print(f"[ingest_statsapi] referee recorded for {ref_patches} fixtures")
 
     # ---- match stats (xG, corners, shots) for finished + live mapped fixtures ----
     finished_states = {"finished", "ft", "full_time", "ended", "live", "in_play"}

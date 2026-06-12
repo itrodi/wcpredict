@@ -87,6 +87,17 @@ STATSAPI_KEY=... python -m engine.calibrate
 | Supabase project paused | Free projects pause after 7 idle days; the 6-hourly worker prevents it while schedules are active |
 | Elo looks wrong after a data fix | Results fold in exactly once via `elo_applied`/`elo_xg_applied`; to recompute from seed, reset those flags and restore seed Elos deliberately |
 
+## v4.1 acceptance gates (re-check after each refresh during the trial)
+
+1. `/admin/health` shows 104/104 fixtures for both vendors and an empty
+   unmapped list (DR Congo and Haiti mapped); every fixture visible on `/fixtures`.
+2. `npm test` green (market-label registry, incl. the `ou05_1h` ≠ 2.5 case).
+3. No page offers more than two model choices; old `?model=` links resolve.
+4. Picks generate on a real refresh, settle on finished fixtures, and the
+   `/picks` track record computes from settled rows.
+5. §5.0 odds probe result recorded in `ops_status.statsapi_odds`; if available,
+   `odds_snapshots` gains `source='statsapi'` opening/closing rows.
+
 ## Known limitations (current, honest)
 
 - **TheStatsAPI payload shapes unverified** until Phase 0 runs with a real key;
@@ -103,7 +114,15 @@ STATSAPI_KEY=... python -m engine.calibrate
   `BLEND_W_MARKET` env).
 - **Market baseline** in `prediction_log` is recovered from the free pipeline's
   `probability − edge` at logging time, i.e. the last pre-finish odds pull —
-  close to, but not formally, the closing line.
+  close to, but not formally, the closing line. (If the §5.0 odds probe finds
+  TheStatsAPI odds available, formal opening/closing lines land in
+  `odds_snapshots` with `source='statsapi'` and close this gap.)
+- **First-half markets can't be settled** (`prediction_log.outcome` stays NULL
+  for `ht_1x2`/`ou*_1h`/`htft`): full-time goals don't record the half-time
+  score. They therefore never reach 30 scored matches and never become picks —
+  intentional until HT scores are stored.
+- **Lineup strength and signals are display/rationale only** — deliberately not
+  model inputs in v4.1 (calibration question for later).
 - **Live mode updates stats/scores only**; in-play model re-pricing is the
   documented stretch goal.
 - **Vercel Hobby is non-commercial**; revisit hosting before any monetisation.

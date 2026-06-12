@@ -5,6 +5,9 @@ Schema lives in `supabase/migrations/` and must be run in order:
 1. `0001_init.sql` — the v3 schema, RLS and Realtime publication.
 2. `0002_dual_pipeline.sql` — v4, **additive only**: pipeline discriminator,
    identity mapping, Pipeline B payload tables, scoreboard.
+3. `0003_v41.sql` — v4.1, additive: `ops_status`, `picks` (+ Realtime), `shots`,
+   `team_signals`, `players`, `referee_signals`, `fixtures.referee`,
+   `lineups.strength`/`key_absences`, `odds_snapshots.source`.
 
 Seed data is `supabase/seed.sql` (idempotent — `on conflict (slug) do update`):
 41 qualified teams with initial Elo approximated from eloratings.net.
@@ -100,6 +103,35 @@ shirt}]`, bench, `confirmed` flag.
 Worker-side HTTP cache (replaces any external cache service): `cache_key` PK,
 `payload` jsonb, `fetched_at`, `ttl_seconds`. Also stores odd bits of worker
 state (e.g. the last seen Odds API credit count under `odds:remaining`).
+
+### ops_status (v4.1)
+Worker-written operational truth, one jsonb row per key: `fixture_count_fd`,
+`fixture_count_statsapi`, `pipeline_a_coverage`, `unmapped_teams` (exact vendor
+names, copy-paste-ready for aliases), `fixtures_missing_odds`,
+`odds_credits_remaining`, `statsapi_odds` (the §5.0 probe result),
+`last_refresh`. `/admin/health` reads this instead of recomputing.
+
+### picks (v4.1)
+The public picks ledger: (fixture, market, selection, tier banker|value,
+probability, market_odds, edge, rationale jsonb bullets, published_at,
+retired_at, outcome). Immutable once published — material changes retire the
+old row and insert a new one. Settled by the worker; in Realtime so new picks
+appear live.
+
+### shots (v4.1)
+Per-shot xG from shotmaps: (fixture, team, minute, xg, is_goal, situation,
+body_part, x, y). Feeds the derived signals.
+
+### team_signals / referee_signals (v4.1)
+Recomputed each run: per-team `xg_overperf`, `big_chance_rate`/`_against`,
+`corner_pace_for`/`_against`, `fh_share`, `set_piece_xg_share`, `form_vs_elo`;
+per-referee avg cards/fouls/corners. Display + rationale inputs only — never
+model inputs in v4.1.
+
+### players (v4.1)
+Per-player season stats (vendor id PK, rating, minutes) refreshed weekly via
+cache TTL. Used to compute `lineups.strength` (minutes-weighted XI rating) and
+`lineups.key_absences` (top-3-rated squad players missing from the XI).
 
 ## Identity mapping
 

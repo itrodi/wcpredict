@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from . import cache, config
+from . import cache, config, ops
 from .aliases import slugify
 from .db import sb
 
@@ -41,6 +41,7 @@ def run():
     rem = r.headers.get("x-requests-remaining")
     if rem is not None:
         cache.set("odds:remaining", int(float(rem)), ttl_seconds=86400 * 31)
+        ops.set_status("odds_credits_remaining", {"remaining": int(float(rem))})
         print(f"[ingest_odds] credits remaining this month: {rem}")
     r.raise_for_status()
     events = r.json()
@@ -109,6 +110,20 @@ def run():
     for i in range(0, len(snapshots), 500):
         sb().table("odds_snapshots").insert(snapshots[i : i + 500]).execute()
     print(f"[ingest_odds] appended {len(snapshots)} snapshot rows")
+
+    # coverage audit (spec v4.1 §1.1): every fixture kicking off in the next 7
+    # days should have odds; log + record the ones that don't
+    week_ahead = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+    covered = {s["fixture_id"] for s in snapshots}
+    missing = [
+        f["id"]
+        for f in fixtures
+        if f["kickoff"] <= week_ahead and f["id"] not in covered
+    ]
+    if missing:
+        print(f"[ingest_odds] WARNING: {len(missing)} fixtures in the next 7 days "
+              f"have no odds rows this pull: {missing}")
+    ops.set_status("fixtures_missing_odds", {"fixture_ids": missing, "window_days": 7})
 
 
 def prune_snapshots():

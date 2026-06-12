@@ -11,7 +11,7 @@ function Eleven({ lineup, teamName }: { lineup: Lineup | undefined; teamName: st
   }
   return (
     <div className="flex-1">
-      <h4 className="mb-2 flex items-center gap-2 text-sm font-medium text-zinc-300">
+      <h4 className="mb-2 flex flex-wrap items-center gap-2 text-sm font-medium text-zinc-300">
         {teamName}
         {lineup.formation && <span className="font-mono text-xs text-zinc-500">{lineup.formation}</span>}
         {lineup.confirmed ? (
@@ -23,7 +23,17 @@ function Eleven({ lineup, teamName }: { lineup: Lineup | undefined; teamName: st
             probable
           </span>
         )}
+        {lineup.strength != null && (
+          <span className="font-mono text-xs text-emerald-300">
+            XI rating {Number(lineup.strength).toFixed(2)}
+          </span>
+        )}
       </h4>
+      {lineup.key_absences && lineup.key_absences.length > 0 && (
+        <p className="mb-2 text-xs text-amber-400">
+          Missing top-rated: {lineup.key_absences.join(", ")}
+        </p>
+      )}
       <ol className="space-y-1 text-xs text-zinc-400">
         {(lineup.starters ?? []).map((p, i) => (
           <li key={`${p.name}-${i}`} className="flex items-baseline gap-2">

@@ -16,19 +16,25 @@ SLUG_ALIASES = {
     "united-states-of-america": "united-states",
     "south-korea": "korea-republic",
     "korea": "korea-republic",
+    "republic-of-korea": "korea-republic",
     "ivory-coast": "cote-divoire",
     "cote-d-ivoire": "cote-divoire",   # plain slugification of "Côte d'Ivoire"
     "cabo-verde": "cape-verde",
+    "cape-verde-islands": "cape-verde",
     "ir-iran": "iran",
     "iran-islamic-republic": "iran",
     "turkiye": "turkey",
     "congo-dr": "dr-congo",
     "dr-congo": "dr-congo",
+    "democratic-republic-of-congo": "dr-congo",
     "democratic-republic-of-the-congo": "dr-congo",
     "congo-kinshasa": "dr-congo",
     "czechia": "czech-republic",
     "bosnia": "bosnia-and-herzegovina",
+    "bosnia-herzegovina": "bosnia-and-herzegovina",
     "uae": "united-arab-emirates",
+    "ksa": "saudi-arabia",
+    "curacao": "curacao",              # explicit: ç already strips to c via NFKD
 }
 
 

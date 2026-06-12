@@ -7,7 +7,7 @@ import time
 
 import requests
 
-from . import cache, config
+from . import cache, config, ops
 from .aliases import slugify
 from .db import sb
 
@@ -70,6 +70,15 @@ def _group_code(match) -> str | None:
 def run():
     matches = _fd_get(f"/competitions/{config.FD_COMPETITION}/matches")["matches"]
     print(f"[ingest_fd] {len(matches)} matches from football-data.org")
+    # football-data.org returns the whole WC in one response — anything short of
+    # the official 104 is a data problem, not pagination (spec v4.1 §1.1)
+    if len(matches) < 100:
+        print(f"[ingest_fd] ERROR: only {len(matches)} matches returned — "
+              f"expected ~{ops.EXPECTED_FIXTURES}; investigate before trusting this run")
+    ops.set_status("fixture_count_fd", {
+        "ingested": len(matches),
+        "expected": ops.EXPECTED_FIXTURES,
+    })
 
     # ---- teams: collect every named team, with group codes from group-stage matches ----
     seen: dict[str, dict] = {}  # slug -> {name, group_code}

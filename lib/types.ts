@@ -20,6 +20,7 @@ export type Fixture = {
   status: "scheduled" | "live" | "finished";
   home_goals: number | null;
   away_goals: number | null;
+  referee: string | null;
   home?: Pick<Team, "name" | "slug"> | null;
   away?: Pick<Team, "name" | "slug"> | null;
 };
@@ -79,7 +80,54 @@ export type Lineup = {
   starters: { player_id?: string; name: string; position?: string; shirt?: number }[];
   bench: unknown;
   confirmed: boolean;
+  strength: number | null;       // minutes-weighted mean XI rating (v4.1 §5.3)
+  key_absences: string[] | null; // top-3-rated squad players missing from the XI
   fetched_at: string;
+};
+
+export type PickRow = {
+  id: number;
+  fixture_id: number;
+  pipeline: string;
+  market: string;
+  selection: string;
+  tier: "banker" | "value";
+  probability: number;
+  market_odds: number | null;
+  edge: number | null;
+  rationale: string[] | null;
+  published_at: string;
+  retired_at: string | null;
+  outcome: boolean | null;
+  fixtures?: {
+    id: number;
+    kickoff: string;
+    status: string;
+    home: { name: string } | null;
+    away: { name: string } | null;
+  } | null;
+};
+
+export type TeamSignal = {
+  team_id: number;
+  signal: string;
+  value: number;
+  window: string | null;
+  computed_at: string;
+};
+
+export type RefereeSignal = {
+  referee: string;
+  matches: number;
+  avg_cards: number | null;
+  avg_fouls: number | null;
+  avg_corners: number | null;
+};
+
+export type OpsStatus = {
+  key: string;
+  value: Record<string, unknown>;
+  updated_at: string;
 };
 
 export type ModelScore = {

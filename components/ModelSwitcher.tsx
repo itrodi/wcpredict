@@ -3,32 +3,33 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 
-import { PIPELINE_LABELS, PIPELINES, type Pipeline } from "@/lib/pipeline";
+import { VIEW_LABELS, VIEWS, type View } from "@/lib/pipeline";
 
-/** Global pipeline toggle (spec v4 §6.1), persisted in ?model=. */
-export default function ModelSwitcher({ active }: { active: Pipeline }) {
+/** Two-pill view toggle (spec v4.1 Phase 3): Site Picks | Baseline. */
+export default function ModelSwitcher({ active }: { active: View }) {
   const pathname = usePathname();
   const params = useSearchParams();
 
-  const href = (p: Pipeline) => {
+  const href = (v: View) => {
     const q = new URLSearchParams(params.toString());
-    q.set("model", p);
+    q.delete("model"); // retire legacy param on navigation
+    q.set("view", v);
     return `${pathname}?${q.toString()}`;
   };
 
   return (
-    <div className="inline-flex flex-wrap gap-1 rounded-lg border border-pitch-700 bg-pitch-900 p-1 text-xs">
-      {PIPELINES.map((p) => (
+    <div className="inline-flex gap-1 rounded-lg border border-pitch-700 bg-pitch-900 p-1 text-xs">
+      {VIEWS.map((v) => (
         <Link
-          key={p}
-          href={href(p)}
-          className={`rounded-md px-2.5 py-1 transition ${
-            p === active
+          key={v}
+          href={href(v)}
+          className={`rounded-md px-3 py-1 transition ${
+            v === active
               ? "bg-accent/15 font-semibold text-accent"
               : "text-zinc-400 hover:text-zinc-200"
           }`}
         >
-          {PIPELINE_LABELS[p]}
+          {VIEW_LABELS[v]}
         </Link>
       ))}
     </div>

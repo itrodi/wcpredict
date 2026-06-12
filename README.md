@@ -15,11 +15,14 @@ compared with data instead of vibes:
 - **Blends** (`blend_free`, `blend_statsapi`): `p = 0.7·p_market + 0.3·p_model` on 1X2.
 - **`market`**: de-vigged closing odds, logged as the baseline both models must beat.
 
-Every prediction row carries a `pipeline` discriminator; the UI has a global model switcher
-(`?model=`), a per-match compare view (`/matches/[id]/compare`), a public scoreboard
-(`/models`, Brier/log-loss per pipeline per market), a value finder (`/value`) and an
-identity-mapping health page (`/admin/health`). If TheStatsAPI breaks, the engine degrades
-to Pipeline A automatically.
+Every prediction row carries a `pipeline` discriminator; the UI shows exactly **two views**
+(Site Picks / Baseline, `?view=`). Headline pages: all 104 fixtures (`/fixtures`, plus
+`/groups/[code]` tables), the rule-generated and publicly settled **picks** (`/picks`, with
+its always-visible track record), the per-match compare view (`/matches/[id]/compare`), the
+public scoreboard (`/models`), the value finder (`/value`) and the ops health page
+(`/admin/health`, fed by worker-written `ops_status`). Match pages open with machine-built
+insight bullets from xG/corner/referee/lineup signals. If TheStatsAPI breaks, the engine
+degrades to Pipeline A automatically. Frontend unit tests: `npm test`.
 
 **Full documentation lives in [`docs/`](docs/README.md)** — architecture, database, engine
 math, frontend, and operations/runbook.
@@ -41,6 +44,8 @@ math, frontend, and operations/runbook.
    - `supabase/migrations/0001_init.sql` (schema, RLS, Realtime publication)
    - `supabase/migrations/0002_dual_pipeline.sql` (v4: pipeline column, xmap tables,
      match_stats/lineups/model_scores — additive only)
+   - `supabase/migrations/0003_v41.sql` (v4.1: ops_status, picks, shots, signals,
+     players, referee — additive only)
    - `supabase/seed.sql` (teams + initial Elo from eloratings.net; groups are filled by the
      first ingest run, and any missing team — e.g. playoff winners — is created automatically)
 2. **API keys** — register at [football-data.org](https://www.football-data.org/client/register)

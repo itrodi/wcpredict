@@ -19,11 +19,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               ⚽ WC<span className="text-accent">Predict</span>
               <span className="ml-2 text-xs font-normal text-zinc-500">2026</span>
             </Link>
-            <div className="flex gap-5 text-sm text-zinc-400">
-              <Link href="/" className="hover:text-accent">Matches</Link>
-              <Link href="/tournament" className="hover:text-accent">Simulator</Link>
+            <div className="flex flex-wrap gap-4 text-sm text-zinc-400 sm:gap-5">
+              <Link href="/fixtures" className="hover:text-accent">Fixtures</Link>
+              <Link href="/picks" className="hover:text-accent">Picks</Link>
               <Link href="/models" className="hover:text-accent">Models</Link>
               <Link href="/value" className="hover:text-accent">Value</Link>
+              <Link href="/tournament" className="hover:text-accent">Tournament</Link>
             </div>
           </nav>
         </header>

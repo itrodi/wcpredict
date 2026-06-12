@@ -56,6 +56,9 @@ MODEL_PARAMS = {
     "CORNERS_K": _f("CORNERS_K", 9.0),
     # blend.py: p = w*p_market + (1-w)*p_model
     "BLEND_W_MARKET": _f("BLEND_W_MARKET", 0.7),
+    # first-half corners share (v4.1 §5.6): 0 = market disabled; set from
+    # calibrate.py output only if the calibration is satisfactory
+    "CORNERS_1H_SHARE": _f("CORNERS_1H_SHARE", 0.0),
 }
 
 # markets considered experimental until model_scores shows >= this many scored matches

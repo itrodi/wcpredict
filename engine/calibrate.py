@@ -25,7 +25,7 @@ EPS = 1e-9
 
 
 def _season_id(comp_id: str, year: str) -> str | None:
-    seasons = as_list(statsapi.get(f"/competitions/{comp_id}/seasons"), "seasons")
+    seasons = statsapi.get_all(f"/competitions/{comp_id}/seasons")
     s = next((x for x in seasons if year in str(pick(x, "year", "name", "label", default=""))), None)
     return str(pick(s, "id", "season_id")) if s else None
 
@@ -38,7 +38,7 @@ def _history(comp_id: str, years: tuple[str, ...]) -> list[dict]:
         if not sid:
             print(f"[calibrate] no season for {year}")
             continue
-        matches = as_list(statsapi.get(f"/competitions/{comp_id}/seasons/{sid}/matches"), "matches")
+        matches = statsapi.get_all(f"/competitions/{comp_id}/seasons/{sid}/matches", ttl=86400 * 30)
         for m in matches:
             if str(pick(m, "status", "state", default="")).lower() not in {"finished", "ft", "full_time", "ended"}:
                 continue
@@ -51,8 +51,11 @@ def _history(comp_id: str, years: tuple[str, ...]) -> list[dict]:
                 "hg1h": pick(score, "halftime_home", "ht_home"),
                 "ag1h": pick(score, "halftime_away", "ht_away"),
                 "corners": None,
+                "corners_1h": None,
                 "xg_h": None,
                 "xg_a": None,
+                "xg_1h": None,
+                "xg_ft": None,
             }
             try:
                 sides = as_list(statsapi.get(f"/matches/{mid}/stats", ttl=86400 * 30), "stats", "statistics")
@@ -62,6 +65,15 @@ def _history(comp_id: str, years: tuple[str, ...]) -> list[dict]:
                 xgs = [pick(s, "xg", "expected_goals") for s in sides]
                 if len(xgs) == 2 and all(x is not None for x in xgs):
                     rec["xg_h"], rec["xg_a"] = float(xgs[0]), float(xgs[1])
+                    rec["xg_ft"] = rec["xg_h"] + rec["xg_a"]
+                # per-half splits (v4.1 §5.6): every stat splits all/first_half/second_half
+                fh = [s.get("first_half") or s.get("1h") or {} for s in sides]
+                fh_corners = [pick(h, "corners", "corner_kicks") for h in fh]
+                if fh and all(c is not None for c in fh_corners):
+                    rec["corners_1h"] = sum(fh_corners)
+                fh_xg = [pick(h, "xg", "expected_goals") for h in fh]
+                if fh and all(x is not None for x in fh_xg):
+                    rec["xg_1h"] = sum(float(x) for x in fh_xg)
             except Exception:
                 pass
             if rec["hg"] is not None:
@@ -87,12 +99,27 @@ def fit_dc_rho(hist: list[dict]) -> float:
 
 
 def fit_fh_share(hist: list[dict]) -> float | None:
+    """First-half goal share. Prefers actual per-half xG splits (v4.1 §5.6),
+    falls back to half-time scorelines."""
+    with_xg = [m for m in hist if m["xg_1h"] is not None and m["xg_ft"]]
+    if len(with_xg) >= 20:
+        return round(sum(m["xg_1h"] for m in with_xg) / sum(m["xg_ft"] for m in with_xg), 3)
     with_ht = [m for m in hist if m["hg1h"] is not None]
     if len(with_ht) < 20:
         return None
     fh = sum(m["hg1h"] + m["ag1h"] for m in with_ht)
     ft = sum(m["hg"] + m["ag"] for m in with_ht)
     return round(fh / ft, 3) if ft else None
+
+
+def fit_fh_corners_share(hist: list[dict]) -> float | None:
+    """First-half corners share. Ship the corners_1h_o45 market ONLY if this
+    returns a value from a decent sample — otherwise leave CORNERS_1H_SHARE=0
+    and the market stays off (don't ship uncalibrated, v4.1 §5.6)."""
+    with_fh = [m for m in hist if m["corners_1h"] is not None and m["corners"]]
+    if len(with_fh) < 30:
+        return None
+    return round(sum(m["corners_1h"] for m in with_fh) / sum(m["corners"] for m in with_fh), 3)
 
 
 def fit_corners_nb(hist: list[dict]) -> tuple[float, float] | None:
@@ -155,6 +182,8 @@ def main():
         fitted["FH_GOAL_SHARE"] = share
     if (nb := fit_corners_nb(hist)) is not None:
         fitted["CORNERS_A"], fitted["CORNERS_K"] = nb
+    if (fh_c := fit_fh_corners_share(hist)) is not None:
+        fitted["CORNERS_1H_SHARE"] = fh_c  # setting this env override SHIPS corners_1h_o45
 
     print("\n[calibrate] fitted parameters — set these as env overrides in refresh.yml:")
     for k, v in fitted.items():

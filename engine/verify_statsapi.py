@@ -55,6 +55,10 @@ def main():
         f"status={ro.status_code}; engine must NEVER call odds endpoints in production",
     )
 
+    # 2b. Re-test match-level odds (spec v4.1 §5.0): the pricing page claims odds
+    # on every plan; Phase 0 recorded them excluded. Needs a real match id.
+    # (Filled in after matches are pulled below — see the deferred block.)
+
     # 3. World Cup present with a current 2026 season  [GATE]
     wc = next(
         (c for c in comps if "world cup" in str(pick(c, "name", "title", default="")).lower()
@@ -99,6 +103,19 @@ def main():
                f"match={pick(m,'id','match_id')} kickoff={pick(m,'kickoff','utc_date','date','start_time')} "
                f"{pick(m.get('home_team') or m.get('homeTeam') or {}, 'name')} vs "
                f"{pick(m.get('away_team') or m.get('awayTeam') or {}, 'name')}")
+
+    # 2b (deferred): match-level odds with a real match id
+    if matches:
+        mid = str(pick(matches[0], "id", "match_id"))
+        r2b = raw_get(f"/matches/{mid}/odds")
+        body = as_list(r2b.json() if r2b.ok else [], "odds", "bookmakers")
+        record(
+            "2b match odds endpoint accessible on our key",
+            r2b.status_code == 200 and bool(body),
+            f"status={r2b.status_code}, bookmakers={len(body)} — if PASS, the engine ingests "
+            f"opening/closing 1X2 + corners prices (source='statsapi'); if FAIL, ops_status "
+            f"records the exclusion and everything else stands",
+        )
 
     # 6. Match stats include corners/shots/xG for internationals  [GATE — make-or-break for corners product]
     finished = [m for m in matches

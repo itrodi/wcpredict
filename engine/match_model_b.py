@@ -68,6 +68,14 @@ def corners_markets(lam_h: float, lam_a: float, elo_diff: float) -> list[tuple[s
         over = float(pmf_t[5:].sum())
         rows.append((name, "over", over))
         rows.append((name, "under", 1.0 - over))
+    # 1st-half corners (v4.1 §5.6): ships only once calibrate.py produces a
+    # satisfactory share and it is set via the CORNERS_1H_SHARE env override
+    fh_share = P["CORNERS_1H_SHARE"]
+    if fh_share > 0:
+        pmf_1h = nb_pmf_vector(max(0.5, mu_total * fh_share), k)
+        over = float(pmf_1h[5:].sum())
+        rows.append(("corners_1h_o45", "over", over))
+        rows.append(("corners_1h_o45", "under", 1.0 - over))
     return rows
 
 
@@ -123,6 +131,39 @@ def markets_for_fixture(elo_h: float, elo_a: float, host_home: bool) -> list[tup
     return rows
 
 
+def _latest_corners_odds(fixture_ids: list[int]) -> dict:
+    """(fixture_id, market) -> {selection: (median_odds, devigged_p)} from
+    TheStatsAPI corners prices, when the plan turned out to include odds
+    (v4.1 §5.0). Empty dict when no such snapshots exist."""
+    from collections import defaultdict
+    out: dict = {}
+    for i in range(0, len(fixture_ids), 50):
+        snaps = (
+            sb().table("odds_snapshots")
+            .select("fixture_id, market, selection, decimal_odds, fetched_at")
+            .in_("fixture_id", fixture_ids[i : i + 50])
+            .eq("source", "statsapi").like("market", "corners%")
+            .order("fetched_at", desc=True).limit(2000)
+            .execute().data
+        )
+        latest: dict = {}
+        for s in snaps:
+            latest.setdefault((s["fixture_id"], s["market"]), s["fetched_at"])
+        by_sel: dict = defaultdict(lambda: defaultdict(list))
+        for s in snaps:
+            key = (s["fixture_id"], s["market"])
+            if s["fetched_at"] == latest[key]:
+                by_sel[key][s["selection"]].append(float(s["decimal_odds"]))
+        for key, sels in by_sel.items():
+            if set(sels) != {"over", "under"}:
+                continue
+            med = {sel: float(np.median(v)) for sel, v in sels.items()}
+            implied = {sel: 1.0 / o for sel, o in med.items()}
+            over = sum(implied.values())
+            out[key] = {sel: (med[sel], implied[sel] / over) for sel in med}
+    return out
+
+
 def run() -> list[dict]:
     teams = {t["id"]: t for t in sb().table("teams").select("id, elo, elo_xg").execute().data}
     fixtures = (
@@ -135,6 +176,7 @@ def run() -> list[dict]:
     )
     fixtures = [f for f in fixtures if f["home_id"] and f["away_id"]]
     book = _latest_devigged_h2h([f["id"] for f in fixtures])
+    corners_book = _latest_corners_odds([f["id"] for f in fixtures])
 
     rows = []
     for f in fixtures:
@@ -156,6 +198,10 @@ def run() -> list[dict]:
             }
             if market == "1x2" and f["id"] in book:
                 med_odds, devig_p = book[f["id"]][selection]
+                row["market_odds"] = round(med_odds, 3)
+                row["edge"] = round(p - devig_p, 4)
+            elif (f["id"], market) in corners_book and selection in corners_book[(f["id"], market)]:
+                med_odds, devig_p = corners_book[(f["id"], market)][selection]
                 row["market_odds"] = round(med_odds, 3)
                 row["edge"] = round(p - devig_p, 4)
             rows.append(row)

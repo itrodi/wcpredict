@@ -28,8 +28,27 @@ without code changes.
 | `write_db.py` | shared | pipeline-stamped upserts; finished-fixture outcome logging |
 | `main.py` | shared | orchestration with per-stage failure fencing |
 | `live_statsapi.py` | B | 5-minute live stats poller (self-exits when idle) |
-| `verify_statsapi.py` | B | Phase 0 trial-week gate → `docs/statsapi-verification.md` |
-| `calibrate.py` | B | history pulls, parameter fits, WC2022 backtest → `docs/backtest-2022.md` |
+| `verify_statsapi.py` | B | Phase 0 trial-week gate (incl. 2b odds re-test) → `docs/statsapi-verification.md` |
+| `calibrate.py` | B | history pulls (paginated), parameter fits incl. per-half shares, WC2022 backtest |
+| `ops.py` | shared | `ops_status` writer — operational truth for `/admin/health` |
+| `ingest_statsapi_extra.py` | B | §5.0 odds probe/ingest, shotmaps, player stats + lineup strength |
+| `signals.py` | B | derived team + referee signals (display/rationale only, never model inputs) |
+| `picks.py` | shared | rule-generated, immutable, publicly settled picks (after compare) |
+
+## v4.1 data-correctness disciplines
+
+- **Pagination**: every TheStatsAPI list call goes through `statsapi.get_all()`
+  (`per_page=100`, loops `meta.total_pages`) — a plain `get()` silently
+  truncates the 104-match season at the default page size.
+- **Coverage assertions**: ingest writes per-vendor fixture counts vs the
+  official 104 into `ops_status`; `main.py` ends each run with a Pipeline A
+  coverage check. Unmapped vendor team names are recorded verbatim so adding an
+  alias is copy-paste from `/admin/health`.
+- **Picks rules** (`picks.py`): calibrated markets only (`model_scores.n ≥ 30`;
+  1x2/ou25/btts exempt), Banker = p ≥ 0.65 ∧ edge ≥ −0.01, Value = edge ≥ 0.04
+  ∧ p ≥ 0.25 ranked by Kelly fraction, ≤2/fixture, ≤10/tier. Material changes
+  retire-and-republish; `write_db.settle_picks` settles outcomes (corners
+  settle from `match_stats`).
 
 ## Pipeline A model (`elo-poisson-v1`)
 

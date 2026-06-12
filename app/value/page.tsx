@@ -1,16 +1,9 @@
 import Link from "next/link";
 
 import ModelSwitcher from "@/components/ModelSwitcher";
-import {
-  EXPERIMENTAL_MARKETS,
-  EXPERIMENTAL_MIN_N,
-  kickoffFmt,
-  MARKET_LABELS,
-  odds,
-  pct,
-  SELECTION_LABELS,
-} from "@/lib/format";
-import { resolvePipeline } from "@/lib/pipeline";
+import { kickoffFmt, odds, pct } from "@/lib/format";
+import { EXPERIMENTAL_MIN_N, isExperimental, marketLabel, selectionLabel } from "@/lib/markets";
+import { resolveView } from "@/lib/pipeline";
 import { supabaseServer } from "@/lib/supabase/server";
 import type { MatchPrediction, ModelScore } from "@/lib/types";
 
@@ -26,15 +19,15 @@ type ValueRow = MatchPrediction & {
   } | null;
 };
 
-/** Value finder (spec v4 §6.7): upcoming fixtures sorted by |edge| (model/blend
- * vs de-vigged market). Responsible-use messaging lives ON this page. */
+/** Value finder: upcoming selections sorted by |edge| (view model vs de-vigged
+ * market). Responsible-use messaging lives ON this page. */
 export default async function ValuePage({
   searchParams,
 }: {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   const sb = supabaseServer();
-  const pipeline = await resolvePipeline(await searchParams, sb);
+  const view = await resolveView(await searchParams, sb);
 
   let rows: ValueRow[] = [];
   let calibrated: string[] = [];
@@ -45,13 +38,17 @@ export default async function ValuePage({
         .select(
           "*, fixtures!inner(id, kickoff, status, home:teams!fixtures_home_id_fkey(name), away:teams!fixtures_away_id_fkey(name))"
         )
-        .eq("pipeline", pipeline)
+        .in("pipeline", [view.blendPipeline, view.modelPipeline])
         .not("edge", "is", null)
         .neq("fixtures.status", "finished")
         .gte("fixtures.kickoff", new Date().toISOString()),
       sb.from("model_scores").select("*").gte("n", EXPERIMENTAL_MIN_N),
     ]);
     rows = ((data as unknown as ValueRow[] | null) ?? [])
+      // view ownership: blend owns 1X2, the model pipeline owns the rest
+      .filter((r) =>
+        r.market === "1x2" ? r.pipeline === view.blendPipeline : r.pipeline === view.modelPipeline
+      )
       .sort((x, y) => Math.abs(Number(y.edge)) - Math.abs(Number(x.edge)))
       .slice(0, 25);
     calibrated = ((scores as ModelScore[] | null) ?? []).map((s) => s.market);
@@ -63,11 +60,11 @@ export default async function ValuePage({
         <div>
           <h1 className="mb-1 text-2xl font-bold text-zinc-100">Value finder</h1>
           <p className="text-sm text-zinc-500">
-            Upcoming selections where the chosen model most disagrees with the de-vigged market
-            price, sorted by |edge|.
+            Upcoming selections where the {view.label.toLowerCase()} most disagrees with the
+            de-vigged market price, sorted by |edge|.
           </p>
         </div>
-        <ModelSwitcher active={pipeline} />
+        <ModelSwitcher active={view.view} />
       </div>
 
       <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 text-xs text-amber-200/90">
@@ -100,44 +97,39 @@ export default async function ValuePage({
               </tr>
             </thead>
             <tbody className="divide-y divide-pitch-800 bg-pitch-900">
-              {rows.map((r) => {
-                const experimental =
-                  EXPERIMENTAL_MARKETS.has(r.market) && !calibrated.includes(r.market);
-                return (
-                  <tr key={r.id} className="hover:bg-pitch-800/60">
-                    <td className="px-3 py-2">
-                      <Link href={`/matches/${r.fixture_id}`} className="text-zinc-100 hover:text-accent">
-                        {r.fixtures?.home?.name ?? "TBD"} v {r.fixtures?.away?.name ?? "TBD"}
-                      </Link>
-                      <div className="text-xs text-zinc-600">
-                        {r.fixtures ? kickoffFmt(r.fixtures.kickoff) : ""}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2 text-zinc-300">
-                      {MARKET_LABELS[r.market] ?? r.market} ·{" "}
-                      {SELECTION_LABELS[r.selection] ?? r.selection}
-                      {experimental && (
-                        <span className="ml-2 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-400">
-                          experimental
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono text-zinc-200">
-                      {pct(Number(r.probability))}
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono text-zinc-400">
-                      {odds(r.market_odds)}
-                    </td>
-                    <td
-                      className={`px-3 py-2 text-right font-mono font-semibold ${
-                        Number(r.edge) > 0 ? "text-accent" : "text-zinc-400"
-                      }`}
-                    >
-                      {`${Number(r.edge) > 0 ? "+" : ""}${(Number(r.edge) * 100).toFixed(1)}%`}
-                    </td>
-                  </tr>
-                );
-              })}
+              {rows.map((r) => (
+                <tr key={r.id} className="hover:bg-pitch-800/60">
+                  <td className="px-3 py-2">
+                    <Link href={`/matches/${r.fixture_id}`} className="text-zinc-100 hover:text-accent">
+                      {r.fixtures?.home?.name ?? "TBD"} v {r.fixtures?.away?.name ?? "TBD"}
+                    </Link>
+                    <div className="text-xs text-zinc-600">
+                      {r.fixtures ? kickoffFmt(r.fixtures.kickoff) : ""}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-zinc-300">
+                    {marketLabel(r.market)} · {selectionLabel(r.market, r.selection)}
+                    {isExperimental(r.market, calibrated) && (
+                      <span className="ml-2 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-400">
+                        experimental
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-zinc-200">
+                    {pct(Number(r.probability))}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-zinc-400">
+                    {odds(r.market_odds)}
+                  </td>
+                  <td
+                    className={`px-3 py-2 text-right font-mono font-semibold ${
+                      Number(r.edge) > 0 ? "text-accent" : "text-zinc-400"
+                    }`}
+                  >
+                    {`${Number(r.edge) > 0 ? "+" : ""}${(Number(r.edge) * 100).toFixed(1)}%`}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>

@@ -36,5 +36,10 @@ site alive untouched.
 ## Version history
 
 - **v3** — single free pipeline (Elo→Poisson), tournament sim, Realtime serving.
-- **v4 (current)** — adds Pipeline B, identity mapping, blends, model scoreboard,
+- **v4** — adds Pipeline B, identity mapping, blends, model scoreboard,
   match stats/lineups panels, line movement, value finder, live polling.
+- **v4.1 (current)** — data-correctness hardening (pagination, alias audit,
+  `ops_status`, `/fixtures` + `/groups/[code]`), the `lib/markets.ts` label
+  registry with unit tests (`npm test`), the two-view UI (Site Picks /
+  Baseline), the public Picks engine (`/picks`), and the hidden-insights layer
+  (shotmaps, team/referee signals, lineup strength, insights cards).

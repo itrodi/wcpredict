@@ -44,6 +44,26 @@ def get(path: str, params: dict | None = None, ttl: int = config.STATSAPI_CACHE_
     return payload
 
 
+def get_all(path: str, params: dict | None = None, ttl: int = config.STATSAPI_CACHE_TTL_S) -> list:
+    """Paginated GET (spec v4.1 §1.1): list endpoints default to per_page=20 with
+    meta.total_pages — a single get() silently truncates the ~104-match season.
+    Loops page=1..total_pages at per_page=100 and concatenates the items."""
+    base = dict(params or {})
+    base["per_page"] = 100
+    out: list = []
+    page = 1
+    while True:
+        payload = get(path, params={**base, "page": page}, ttl=ttl)
+        items = as_list(payload)
+        out.extend(items)
+        meta = payload.get("meta") if isinstance(payload, dict) else None
+        total_pages = int(pick(meta or {}, "total_pages", "totalPages", "last_page", default=1) or 1)
+        if page >= total_pages or not items:
+            break
+        page += 1
+    return out
+
+
 def pick(d: dict, *keys, default=None):
     """First present key wins — tolerates vendor field-name variations."""
     for k in keys:
@@ -68,7 +88,7 @@ def find_world_cup_season() -> tuple[str, str]:
     hit = cache.get("statsapi:wc_season")
     if hit:
         return hit["competition_id"], hit["season_id"]
-    comps = as_list(get("/competitions"), "competitions")
+    comps = get_all("/competitions")
     wc = next(
         (
             c
@@ -80,7 +100,7 @@ def find_world_cup_season() -> tuple[str, str]:
     if not wc:
         raise StatsApiError("FIFA World Cup not found in /competitions")
     comp_id = str(pick(wc, "id", "competition_id"))
-    seasons = as_list(get(f"/competitions/{comp_id}/seasons"), "seasons")
+    seasons = get_all(f"/competitions/{comp_id}/seasons")
     season = next(
         (s for s in seasons if pick(s, "is_current", "current") is True),
         None,

@@ -1,6 +1,8 @@
+import Link from "next/link";
+
 import FixtureCard from "@/components/FixtureCard";
 import ModelSwitcher from "@/components/ModelSwitcher";
-import { resolvePipeline } from "@/lib/pipeline";
+import { mergeViewRows, resolveView } from "@/lib/pipeline";
 import { supabaseServer } from "@/lib/supabase/server";
 import type { Fixture, MatchPrediction } from "@/lib/types";
 
@@ -15,7 +17,7 @@ export default async function Home({
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   const sb = supabaseServer();
-  const pipeline = await resolvePipeline(await searchParams, sb);
+  const view = await resolveView(await searchParams, sb);
   let upcoming: Fixture[] = [];
   let recent: Fixture[] = [];
   let predictions: MatchPrediction[] = [];
@@ -38,11 +40,10 @@ export default async function Home({
     upcoming = (up as Fixture[] | null) ?? [];
     recent = (rec as Fixture[] | null) ?? [];
     if (upcoming.length > 0) {
-      // pipeline filter is mandatory post-v4 — without it rows double (spec v4 §10)
       const { data: preds } = await sb
         .from("match_predictions")
         .select("*")
-        .eq("pipeline", pipeline)
+        .in("pipeline", [view.blendPipeline, view.modelPipeline])
         .eq("market", "1x2")
         .in(
           "fixture_id",
@@ -57,7 +58,7 @@ export default async function Home({
       <section>
         <div className="mb-1 flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-2xl font-bold text-zinc-100">Upcoming matches</h1>
-          <ModelSwitcher active={pipeline} />
+          <ModelSwitcher active={view.view} />
         </div>
         <p className="mb-5 text-sm text-zinc-500">
           Model probabilities, refreshed by the worker every few hours (hourly on matchdays).
@@ -68,15 +69,28 @@ export default async function Home({
             <code className="text-emerald-300">refresh</code> GitHub Actions workflow to ingest the schedule.
           </p>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2">
-            {upcoming.map((f) => (
-              <FixtureCard
-                key={f.id}
-                fixture={f}
-                predictions={predictions.filter((p) => p.fixture_id === f.id)}
-              />
-            ))}
-          </div>
+          <>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {upcoming.map((f) => (
+                <FixtureCard
+                  key={f.id}
+                  fixture={f}
+                  predictions={mergeViewRows(
+                    predictions.filter((p) => p.fixture_id === f.id),
+                    view
+                  )}
+                />
+              ))}
+            </div>
+            <div className="mt-5">
+              <Link
+                href="/fixtures"
+                className="inline-flex items-center gap-1 rounded-lg border border-pitch-700 bg-pitch-900 px-4 py-2 text-sm font-medium text-emerald-300 transition hover:border-accent/50"
+              >
+                All fixtures →
+              </Link>
+            </div>
+          </>
         )}
       </section>
 

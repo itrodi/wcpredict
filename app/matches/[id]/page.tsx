@@ -1,17 +1,44 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import InsightsCard, { buildInsights } from "@/components/InsightsCard";
 import LineMovementChart from "@/components/LineMovementChart";
 import LineupsPanel from "@/components/LineupsPanel";
 import MatchMarkets from "@/components/MatchMarkets";
 import ModelSwitcher from "@/components/ModelSwitcher";
 import StatsPanel from "@/components/StatsPanel";
-import { EXPERIMENTAL_MIN_N, kickoffFmt, STAGE_LABELS } from "@/lib/format";
-import { basePipeline, resolvePipeline } from "@/lib/pipeline";
+import { kickoffFmt, STAGE_LABELS } from "@/lib/format";
+import { EXPERIMENTAL_MIN_N } from "@/lib/markets";
+import { mergeViewRows, resolveView } from "@/lib/pipeline";
 import { supabaseServer } from "@/lib/supabase/server";
-import type { Fixture, Lineup, MatchPrediction, MatchStat, ModelScore, OddsSnapshot } from "@/lib/types";
+import type {
+  Fixture,
+  Lineup,
+  MatchPrediction,
+  MatchStat,
+  ModelScore,
+  OddsSnapshot,
+  RefereeSignal,
+  TeamSignal,
+} from "@/lib/types";
 
 export const revalidate = 300;
+
+function biggestMove(snaps: OddsSnapshot[]) {
+  const series = new Map<string, number[]>();
+  for (const s of snaps) {
+    const list = series.get(s.selection) ?? [];
+    list.push(Number(s.decimal_odds));
+    series.set(s.selection, list);
+  }
+  let best: { selection: string; from: number; to: number } | null = null;
+  for (const [selection, odds] of series) {
+    if (odds.length < 2) continue;
+    const move = { selection, from: odds[0], to: odds[odds.length - 1] };
+    if (!best || Math.abs(move.from - move.to) > Math.abs(best.from - best.to)) best = move;
+  }
+  return best;
+}
 
 export default async function MatchPage({
   params,
@@ -26,8 +53,7 @@ export default async function MatchPage({
 
   const sb = supabaseServer();
   if (!sb) notFound();
-  const sp = await searchParams;
-  const pipeline = await resolvePipeline(sp, sb);
+  const view = await resolveView(await searchParams, sb);
 
   const { data: fixture } = await sb
     .from("fixtures")
@@ -39,35 +65,52 @@ export default async function MatchPage({
   if (!fixture) notFound();
   const f = fixture as Fixture;
 
-  // Blends only carry 1X2 rows; merge the base model's other markets underneath
-  // so switching to a blend never empties the page. Blend wins per (market, selection).
-  const pipelines = pipeline.startsWith("blend_")
-    ? [pipeline, basePipeline(pipeline)]
-    : [pipeline];
-  const [{ data: preds }, { data: scores }, { data: stats }, { data: lineups }, { data: snaps }] =
-    await Promise.all([
-      sb.from("match_predictions").select("*").eq("fixture_id", fixtureId).in("pipeline", pipelines),
-      sb.from("model_scores").select("*").gte("n", EXPERIMENTAL_MIN_N),
-      sb.from("match_stats").select("*").eq("fixture_id", fixtureId),
-      sb.from("lineups").select("*").eq("fixture_id", fixtureId),
-      sb
-        .from("odds_snapshots")
-        .select("fixture_id, bookmaker, market, selection, decimal_odds, fetched_at, id")
-        .eq("fixture_id", fixtureId)
-        .eq("market", "h2h")
-        .order("fetched_at", { ascending: true })
-        .limit(2000),
-    ]);
+  const teamIds = [f.home_id, f.away_id].filter((x): x is number => x != null);
+  const [
+    { data: preds },
+    { data: scores },
+    { data: stats },
+    { data: lineups },
+    { data: snaps },
+    { data: sigs },
+    { data: refSig },
+  ] = await Promise.all([
+    sb
+      .from("match_predictions")
+      .select("*")
+      .eq("fixture_id", fixtureId)
+      .in("pipeline", [view.blendPipeline, view.modelPipeline]),
+    sb.from("model_scores").select("*").gte("n", EXPERIMENTAL_MIN_N),
+    sb.from("match_stats").select("*").eq("fixture_id", fixtureId),
+    sb.from("lineups").select("*").eq("fixture_id", fixtureId),
+    sb
+      .from("odds_snapshots")
+      .select("fixture_id, bookmaker, market, selection, decimal_odds, fetched_at, id")
+      .eq("fixture_id", fixtureId)
+      .eq("market", "h2h")
+      .order("fetched_at", { ascending: true })
+      .limit(2000),
+    teamIds.length
+      ? sb.from("team_signals").select("*").in("team_id", teamIds)
+      : Promise.resolve({ data: [] }),
+    f.referee
+      ? sb.from("referee_signals").select("*").eq("referee", f.referee).maybeSingle()
+      : Promise.resolve({ data: null }),
+  ]);
 
-  const all = (preds as MatchPrediction[] | null) ?? [];
-  const merged = new Map<string, MatchPrediction>();
-  for (const p of pipelines.slice().reverse()) {
-    for (const r of all.filter((r) => r.pipeline === p)) {
-      merged.set(`${r.market}:${r.selection}`, r);
-    }
-  }
-  const initial = [...merged.values()];
+  const initial = mergeViewRows((preds as MatchPrediction[] | null) ?? [], view);
   const calibrated = ((scores as ModelScore[] | null) ?? []).map((s) => s.market);
+  const lineupRows = (lineups as Lineup[] | null) ?? [];
+  const snapRows = (snaps as OddsSnapshot[] | null) ?? [];
+
+  const insights = buildInsights({
+    home: { teamId: f.home_id, name: f.home?.name ?? "Home" },
+    away: { teamId: f.away_id, name: f.away?.name ?? "Away" },
+    signals: (sigs as TeamSignal[] | null) ?? [],
+    referee: (refSig as RefereeSignal | null) ?? null,
+    lineups: lineupRows,
+    movement: biggestMove(snapRows),
+  });
 
   return (
     <div className="space-y-6">
@@ -75,8 +118,16 @@ export default async function MatchPage({
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
           <span>
             {STAGE_LABELS[f.stage] ?? f.stage}
-            {f.group_code ? ` · Group ${f.group_code}` : ""}
+            {f.group_code ? (
+              <>
+                {" · "}
+                <Link href={`/groups/${f.group_code}`} className="text-emerald-300 hover:underline">
+                  Group {f.group_code}
+                </Link>
+              </>
+            ) : null}
             {f.venue ? ` · ${f.venue}` : ""}
+            {f.referee ? ` · Referee: ${f.referee}` : ""}
           </span>
           <Link
             href={`/matches/${fixtureId}/compare`}
@@ -106,7 +157,9 @@ export default async function MatchPage({
         </div>
       </div>
 
-      <ModelSwitcher active={pipeline} />
+      <ModelSwitcher active={view.view} />
+
+      <InsightsCard bullets={insights} />
 
       <StatsPanel
         fixtureId={fixtureId}
@@ -122,12 +175,12 @@ export default async function MatchPage({
           homeTeamId={f.home_id}
           homeName={f.home?.name ?? "Home"}
           awayName={f.away?.name ?? "Away"}
-          lineups={(lineups as Lineup[] | null) ?? []}
+          lineups={lineupRows}
         />
       )}
 
       <LineMovementChart
-        snapshots={(snaps as OddsSnapshot[] | null) ?? []}
+        snapshots={snapRows}
         homeName={f.home?.name ?? "Home"}
         awayName={f.away?.name ?? "Away"}
       />
@@ -140,7 +193,8 @@ export default async function MatchPage({
       ) : null}
       <MatchMarkets
         fixtureId={fixtureId}
-        pipeline={pipeline}
+        pipelines={[view.blendPipeline, view.modelPipeline]}
+        label={view.label}
         initial={initial}
         calibratedMarkets={calibrated}
       />
