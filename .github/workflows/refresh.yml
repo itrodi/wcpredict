@@ -41,4 +41,4 @@ jobs:
           FOOTBALL_DATA_ORG_TOKEN: ${{ secrets.FOOTBALL_DATA_ORG_TOKEN }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           STATSAPI_KEY: ${{ secrets.STATSAPI_KEY }}   # Pipeline B; engine runs A-only when absent
-          ELO_GOAL_BETA: *{{ 0.0022 }}
+        
