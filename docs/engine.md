@@ -45,10 +45,26 @@ without code changes.
   coverage check. Unmapped vendor team names are recorded verbatim so adding an
   alias is copy-paste from `/admin/health`.
 - **Picks rules** (`picks.py`): calibrated markets only (`model_scores.n ≥ 30`;
-  1x2/ou25/btts exempt), Banker = p ≥ 0.65 ∧ edge ≥ −0.01, Value = edge ≥ 0.04
-  ∧ p ≥ 0.25 ranked by Kelly fraction, ≤2/fixture, ≤10/tier. Material changes
-  retire-and-republish; `write_db.settle_picks` settles outcomes (corners
-  settle from `match_stats`).
+  1x2/ou25/btts exempt), Banker = p ≥ 0.65 ∧ edge ≥ −0.01 (1x2 bankers come from
+  the blend), Value = **model**-pipeline rows with edge ≥ 0.04 ∧ p ≥ 0.25 ∧
+  `p·odds > 1` (positive EV at the *quoted* price — an edge over the de-vigged
+  probability alone can still lose to the vig on favourites), ranked by the
+  true Kelly fraction `(p·odds − 1)/(odds − 1)`; ≤2/fixture, ≤10/tier. Material
+  changes retire-and-republish; `write_db.settle_picks` settles outcomes
+  (corners settle from `match_stats`, 1H markets from the stored HT score).
+- **Closing odds means closing**: odds ingest and both match models only touch
+  `status='scheduled'` fixtures (and the odds ingest skips events whose
+  commence time has passed), so the last stored prediction row — the one
+  `prediction_log` copies — is genuinely pre-kickoff, never an in-play price.
+- **90-minute settlement**: football-data's `fullTime` includes extra time, so
+  `fixtures.duration` is stored and `settle_outcome` settles every market on
+  90' conventions — a knockout match that went to ET settles 1x2 as a draw,
+  while goal-count and corners markets are unsettleable (no 90' record).
+  Pens winners persist in `fixtures.winner_id` for the simulation.
+- **Pagination everywhere**: any table that can outgrow PostgREST's 1000-row
+  cap (`prediction_log`, `shots`, `odds_snapshots`, pick candidates) is read
+  via `db.fetch_all` or latest-pull-bounded batches; `compare.py` additionally
+  dedupes log rows defensively so the scoreboard can never double-count.
 
 ## Pipeline A model (`elo-poisson-v1`)
 
@@ -57,7 +73,11 @@ without code changes.
 finished results once each (`elo_applied`).
 
 **Elo → goals (v2)**: `λ_home = 1.3·e^(+β·dr)`, `λ_away = 1.3·e^(−β·dr)`
-(β = `ELO_GOAL_BETA`, default 0.002), clipped to [0.2, 4.0]. Even matches keep
+(β = `ELO_GOAL_BETA`, default 0.002 — fit it with
+`calibrate.fit_elo_goal_beta`, which picks β so the Poisson-implied match
+expectancy tracks the Elo curve; the fitted value is ≈0.0022 and the default
+underrates favourites by ~3pts at moderate gaps), clipped to [0.2, 4.0]. Even
+matches keep
 the 2.6 expected total; strength gaps raise it (a 600-point mismatch expects
 ~4.4 goals). The v1 mapping split a *fixed* total by win expectancy, which made
 every totals market (O/U 2.5, 1H totals, the corners mean) constant across
@@ -120,19 +140,24 @@ the same `p_market`. Refit of `w` is manual for now (see operations.md).
 
 Fully vectorised numpy, 20,000 runs per pipeline per refresh.
 
-- **Group stage**: finished matches fixed, the rest sampled
-  `Poisson(λ)` from the pipeline's rating. Ranking key: points → goal diff →
-  goals for → random jitter. Top 2 from each of the 12 groups + the 8 best
+- **Group stage**: finished matches fixed, the rest sampled `Poisson(λ)` from
+  the pipeline's rating — Pipeline B samples the joint Dixon-Coles scoreline so
+  the sim matches its match model. Ranking key: points → goal diff → goals for
+  → random jitter (FIFA's later head-to-head/fair-play tiebreakers are
+  approximated by the jitter). Top 2 from each of the 12 groups + the 8 best
   thirds (ranked on the same key) → 32 qualifiers.
-- **Knockouts**: if football-data.org has published a round's full pairings
-  (all matches with both teams known), those exact pairings are used and
-  finished results fixed; otherwise survivors are **reseeded by Elo, best vs
-  worst** — the documented v1 simplification (the exact FIFA R32 third-place
-  allocation mapping is the known upgrade). Knockout winners are drawn from the
-  no-draw Elo expectancy; a real match finished level (pens) also falls back to
-  that weighted coin since full-time goals don't identify the winner.
-- Outputs per team: `advance_grp`, `reach_qf`, `reach_sf`, `reach_final`,
-  `champion` (occurrence counts / n_sims).
+- **Knockouts follow the official FIFA bracket** (matches 73–104): fixed
+  winner/runner-up slots per R32 match, the eight third-place slots with their
+  allowed-group sets, and the published match-number progression to the final.
+  The eight qualified thirds are placed by a constraint-respecting matching
+  (memoised over the 495 scenarios; `engine/tests.py` verifies all of them).
+  Once football-data publishes the real R32 — FIFA's own thirds placement —
+  the exact pairings are forced. Knockout winners are drawn from the no-draw
+  Elo expectancy; real decided results override wherever the simulated pairing
+  matches a real fixture, and pens winners come from `fixtures.winner_id`
+  rather than a coin flip.
+- Outputs per team: `advance_grp`, `reach_r16`, `reach_qf`, `reach_sf`,
+  `reach_final`, `champion` (occurrence counts / n_sims).
 
 ## Scoring (`compare.py` + `write_db.log_finished_predictions`)
 
@@ -150,8 +175,10 @@ yields ~72 scored matches before the knockouts.
   WC season present, DR Congo/Haiti, ~104 fixtures, corners/xG in stats,
   HT splits, lineups, 2018/2022 history, rate-limit burst). Gate: checks 3, 5,
   6 must pass before building further on Pipeline B. Exit code 1 on gate fail.
-- **`calibrate.py`** — pulls 2018+2022 WC history, fits DC rho (grid MLE),
-  first-half goal share, corners NB (moment matching), backtests plain-Poisson
-  vs Dixon-Coles on WC 2022 and writes the acceptance verdict (B must beat A on
-  1X2 log-loss to become the site default). Prints fitted params as env
-  overrides.
+- **`calibrate.py`** — fits `ELO_GOAL_BETA` (Poisson-implied expectancy vs the
+  Elo curve — no history needed), then pulls 2018+2022 WC history and fits DC
+  rho (grid MLE), first-half goal share, corners NB (moment matching).
+  Backtests plain-Poisson vs Dixon-Coles on WC 2022 and writes the acceptance
+  verdict (B must beat A on 1X2 log-loss to become the site default); the
+  gate's rho is fitted on pre-2022 history only so the verdict is
+  out-of-sample. Prints fitted params as env overrides.

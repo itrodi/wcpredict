@@ -48,7 +48,9 @@ MODEL_PARAMS = {
     # match_model: lambda_home = (TOTAL_GOALS/2) * exp(+beta*dr), away exp(-beta*dr).
     # v1 split a FIXED total by win expectancy, which made every totals market
     # (O/U 2.5, 1H totals, corners mean) constant across fixtures — the bug fix
-    # is that strength gaps now raise the expected total (mismatch -> more goals)
+    # is that strength gaps now raise the expected total (mismatch -> more goals).
+    # Fit by calibrate.fit_elo_goal_beta (Poisson-implied expectancy must track
+    # the Elo curve) — set the printed override; the default underrates favourites.
     "ELO_GOAL_BETA": _f("ELO_GOAL_BETA", 0.002),
     # match_model_b.py: Dixon-Coles low-score correction
     "DC_RHO": _f("DC_RHO", -0.1),

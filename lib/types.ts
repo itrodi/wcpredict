@@ -44,6 +44,7 @@ export type TournamentOdds = {
   pipeline: string;
   team_id: number;
   advance_grp: number | null;
+  reach_r16: number | null;
   reach_qf: number | null;
   reach_sf: number | null;
   reach_final: number | null;

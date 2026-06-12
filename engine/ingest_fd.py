@@ -137,20 +137,32 @@ def run():
         home = (m.get("homeTeam") or {}).get("name")
         away = (m.get("awayTeam") or {}).get("name")
         home_slug = slugify(home) if home else None
-        score = (m.get("score") or {}).get("fullTime") or {}
+        away_slug = slugify(away) if away else None
+        home_id = team_ids.get(home_slug) if home else None
+        away_id = team_ids.get(away_slug) if away else None
+        score_obj = m.get("score") or {}
+        score = score_obj.get("fullTime") or {}
+        ht = score_obj.get("halfTime") or {}
+        # winner covers pens-decided matches where fullTime stays level; the
+        # duration flag is what lets settlement distinguish 90' from ET results
+        winner_id = {"HOME_TEAM": home_id, "AWAY_TEAM": away_id}.get(score_obj.get("winner"))
         rows.append(
             {
                 "ext_id": str(m["id"]),
                 "stage": stage,
                 "group_code": _group_code(m),
-                "home_id": team_ids.get(home_slug) if home else None,
-                "away_id": team_ids.get(slugify(away)) if away else None,
+                "home_id": home_id,
+                "away_id": away_id,
                 "kickoff": m["utcDate"],
                 "venue": m.get("venue"),
                 "host_home": home_slug in HOST_SLUGS if home_slug else False,
                 "status": STATUS_MAP.get(m.get("status", ""), "scheduled"),
                 "home_goals": score.get("home"),
                 "away_goals": score.get("away"),
+                "duration": score_obj.get("duration") or "REGULAR",
+                "winner_id": winner_id,
+                "ht_home_goals": ht.get("home"),
+                "ht_away_goals": ht.get("away"),
             }
         )
     for batch in _chunks(rows, 500):

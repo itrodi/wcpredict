@@ -15,7 +15,10 @@ Signals:
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from .db import chunked, sb
+import numpy as np
+
+from .db import chunked, fetch_all, sb
+from .match_model import elo_lambdas, scoreline_matrix
 
 WINDOW = "wc2026"
 BIG_CHANCE_XG = 0.3
@@ -39,8 +42,9 @@ def run():
         print("[signals] no finished fixtures yet")
         return
 
-    stats = sb().table("match_stats").select("*").eq("period", "FT").execute().data
-    shots = sb().table("shots").select("*").execute().data
+    # paginate: shots alone passes the 1000-row cap after ~40 matches
+    stats = fetch_all(lambda: sb().table("match_stats").select("*").eq("period", "FT").order("id"))
+    shots = fetch_all(lambda: sb().table("shots").select("*").order("id"))
     teams = sb().table("teams").select("id, elo").execute().data
     elo = {t["id"]: float(t["elo"]) for t in teams}
 
@@ -54,6 +58,14 @@ def run():
     points_hist: dict[int, list] = defaultdict(list)  # [(points, elo_expected_points)]
 
     for f in fixtures:
+        # Elo-expected points from the engine's own Poisson model: 3*P(win) +
+        # P(draw). The old 3*W_e overstated by 0.5*P(draw) since W_e folds half
+        # the draw probability into the "win" expectancy.
+        m = scoreline_matrix(*elo_lambdas(
+            elo[f["home_id"]], elo[f["away_id"]], bool(f["host_home"])
+        ))
+        p_home, p_draw, p_away = float(np.tril(m, -1).sum()), float(np.trace(m)), float(np.triu(m, 1).sum())
+        exp_pts = {f["home_id"]: 3 * p_home + p_draw, f["away_id"]: 3 * p_away + p_draw}
         for team, opp, gf, ga, is_home in (
             (f["home_id"], f["away_id"], f["home_goals"], f["away_goals"], True),
             (f["away_id"], f["home_id"], f["away_goals"], f["home_goals"], False),
@@ -69,11 +81,8 @@ def run():
                 acc[team]["corner_games"] += 1
             if opp_st and opp_st["corners"] is not None:
                 acc[team]["corners_against"] += opp_st["corners"]
-            # form vs Elo expectation (home adv only when host_home)
-            adv = 100 if (f["host_home"] and is_home) else (-100 if f["host_home"] else 0)
-            we = 1.0 / (10 ** (-(elo[team] - elo[opp] + adv) / 400.0) + 1.0)
             pts = 3 if gf > ga else 1 if gf == ga else 0
-            points_hist[team].append((pts, 3 * we))
+            points_hist[team].append((pts, exp_pts[team]))
 
     now = _now()
     rows = []
