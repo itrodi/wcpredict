@@ -57,7 +57,7 @@ create table team_signals (
   team_id integer references teams(id),
   signal text not null,             -- 'xg_overperf' | 'big_chance_rate' | 'corner_pace_for' | ...
   value numeric(8,3),
-  window text,                      -- e.g. 'wc2026'
+  window_label text,                -- e.g. 'wc2026' ("window" is a reserved word in Postgres)
   computed_at timestamptz not null,
   unique (team_id, signal)
 );

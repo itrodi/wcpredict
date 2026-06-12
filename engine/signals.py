@@ -83,7 +83,7 @@ def run():
             rows.append({
                 "team_id": team_id, "signal": signal,
                 "value": round(float(value), 3),
-                "window": WINDOW, "computed_at": now,
+                "window_label": WINDOW, "computed_at": now,
             })
 
     opp_big: dict[int, float] = defaultdict(float)

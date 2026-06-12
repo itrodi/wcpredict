@@ -112,7 +112,7 @@ export type TeamSignal = {
   team_id: number;
   signal: string;
   value: number;
-  window: string | null;
+  window_label: string | null;
   computed_at: string;
 };
 
