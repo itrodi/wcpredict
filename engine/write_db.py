@@ -17,9 +17,10 @@ def upsert_match_predictions(rows: list[dict]):
     now = _now()
     for r in rows:
         r["computed_at"] = now
+        r.setdefault("pipeline", "free")
     for batch in chunked(rows):
         sb().table("match_predictions").upsert(
-            batch, on_conflict="fixture_id,market,selection"
+            batch, on_conflict="pipeline,fixture_id,market,selection"
         ).execute()
     print(f"[write_db] upserted {len(rows)} match_predictions")
 
@@ -28,9 +29,10 @@ def upsert_tournament_odds(rows: list[dict]):
     now = _now()
     for r in rows:
         r["computed_at"] = now
+        r.setdefault("pipeline", "free")
     for batch in chunked(rows):
         sb().table("tournament_odds").upsert(
-            batch, on_conflict="team_id,model_version"
+            batch, on_conflict="pipeline,team_id,model_version"
         ).execute()
     print(f"[write_db] upserted {len(rows)} tournament_odds")
 
@@ -70,7 +72,7 @@ def log_finished_predictions():
         preds = (
             sb()
             .table("match_predictions")
-            .select("market, selection, probability")
+            .select("pipeline, market, selection, probability, edge")
             .eq("fixture_id", f["id"])
             .execute()
             .data
@@ -78,6 +80,7 @@ def log_finished_predictions():
         for p in preds:
             rows.append(
                 {
+                    "pipeline": p["pipeline"],
                     "fixture_id": f["id"],
                     "market": p["market"],
                     "selection": p["selection"],
@@ -85,6 +88,20 @@ def log_finished_predictions():
                     "outcome": outcome(p["market"], p["selection"], f["home_goals"], f["away_goals"]),
                 }
             )
+            # market baseline (spec v4 §5.4): de-vigged closing odds, recovered
+            # from edge = p_model - p_market on the free pipeline's 1x2 rows
+            if p["pipeline"] == "free" and p["market"] == "1x2" and p["edge"] is not None:
+                p_market = float(p["probability"]) - float(p["edge"])
+                rows.append(
+                    {
+                        "pipeline": "market",
+                        "fixture_id": f["id"],
+                        "market": "1x2",
+                        "selection": p["selection"],
+                        "probability": round(min(max(p_market, 0.0), 1.0), 4),
+                        "outcome": outcome("1x2", p["selection"], f["home_goals"], f["away_goals"]),
+                    }
+                )
     for batch in chunked(rows):
         sb().table("prediction_log").insert(batch).execute()
     print(f"[write_db] logged {len(rows)} prediction outcomes for {len(todo)} finished fixtures")

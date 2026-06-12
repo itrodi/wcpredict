@@ -40,3 +40,4 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           FOOTBALL_DATA_ORG_TOKEN: ${{ secrets.FOOTBALL_DATA_ORG_TOKEN }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          STATSAPI_KEY: ${{ secrets.STATSAPI_KEY }}   # Pipeline B; engine runs A-only when absent

@@ -17,7 +17,7 @@ ROUND_SIZES = {"R32": 16, "R16": 8, "QF": 4, "SF": 2, "F": 1}
 
 
 def _load():
-    teams = sb().table("teams").select("id, elo, group_code").execute().data
+    teams = sb().table("teams").select("id, elo, elo_xg, group_code").execute().data
     fixtures = (
         sb()
         .table("fixtures")
@@ -29,13 +29,23 @@ def _load():
     return teams, fixtures
 
 
-def run(n_sims: int = config.N_SIMS):
+def run(n_sims: int = config.N_SIMS, pipeline: str = config.PIPELINE_FREE):
+    """Runs once per pipeline (v4 §1): 'free' uses results-Elo, 'statsapi' uses
+    xG-Elo (falling back per-team to elo where elo_xg is not yet set)."""
     teams, fixtures = _load()
     rng = np.random.default_rng()
 
+    use_xg = pipeline == config.PIPELINE_STATSAPI
+    model_version = config.MODEL_VERSION_B if use_xg else config.MODEL_VERSION
+
     idx = {t["id"]: i for i, t in enumerate(teams)}
     ids = np.array([t["id"] for t in teams])
-    E = np.array([float(t["elo"]) for t in teams])
+    E = np.array(
+        [
+            float(t["elo_xg"] if use_xg and t.get("elo_xg") is not None else t["elo"])
+            for t in teams
+        ]
+    )
     nt = len(teams)
 
     groups: dict[str, list[int]] = {}
@@ -146,6 +156,7 @@ def run(n_sims: int = config.N_SIMS):
     for i in range(nt):
         rows.append(
             {
+                "pipeline": pipeline,
                 "team_id": int(ids[i]),
                 "advance_grp": round(float(adv[i]), 4),
                 "reach_qf": round(float(qf[i]), 4),
@@ -153,10 +164,10 @@ def run(n_sims: int = config.N_SIMS):
                 "reach_final": round(float(fin[i]), 4),
                 "champion": round(float(ch[i]), 4),
                 "n_sims": n_sims,
-                "model_version": config.MODEL_VERSION,
+                "model_version": model_version,
             }
         )
-    print(f"[simulate] {n_sims} sims complete; favourite champion p={ch.max():.3f}")
+    print(f"[simulate:{pipeline}] {n_sims} sims complete; favourite champion p={ch.max():.3f}")
     return rows
 
 

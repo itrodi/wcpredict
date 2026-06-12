@@ -1,4 +1,6 @@
 import FixtureCard from "@/components/FixtureCard";
+import ModelSwitcher from "@/components/ModelSwitcher";
+import { resolvePipeline } from "@/lib/pipeline";
 import { supabaseServer } from "@/lib/supabase/server";
 import type { Fixture, MatchPrediction } from "@/lib/types";
 
@@ -7,8 +9,13 @@ export const revalidate = 300; // 5 min keeps first paint fresh; Realtime handle
 const FIXTURE_SELECT =
   "*, home:teams!fixtures_home_id_fkey(name,slug), away:teams!fixtures_away_id_fkey(name,slug)";
 
-export default async function Home() {
+export default async function Home({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
   const sb = supabaseServer();
+  const pipeline = await resolvePipeline(await searchParams, sb);
   let upcoming: Fixture[] = [];
   let recent: Fixture[] = [];
   let predictions: MatchPrediction[] = [];
@@ -31,9 +38,11 @@ export default async function Home() {
     upcoming = (up as Fixture[] | null) ?? [];
     recent = (rec as Fixture[] | null) ?? [];
     if (upcoming.length > 0) {
+      // pipeline filter is mandatory post-v4 — without it rows double (spec v4 §10)
       const { data: preds } = await sb
         .from("match_predictions")
         .select("*")
+        .eq("pipeline", pipeline)
         .eq("market", "1x2")
         .in(
           "fixture_id",
@@ -46,13 +55,16 @@ export default async function Home() {
   return (
     <div className="space-y-10">
       <section>
-        <h1 className="mb-1 text-2xl font-bold text-zinc-100">Upcoming matches</h1>
+        <div className="mb-1 flex flex-wrap items-center justify-between gap-3">
+          <h1 className="text-2xl font-bold text-zinc-100">Upcoming matches</h1>
+          <ModelSwitcher active={pipeline} />
+        </div>
         <p className="mb-5 text-sm text-zinc-500">
-          Elo→Poisson model probabilities, refreshed by the worker every few hours (hourly on matchdays).
+          Model probabilities, refreshed by the worker every few hours (hourly on matchdays).
         </p>
         {upcoming.length === 0 ? (
           <p className="rounded-xl border border-pitch-700 bg-pitch-900 p-6 text-sm text-zinc-500">
-            No fixtures yet. Run the database migration + seed, then trigger the{" "}
+            No fixtures yet. Run the database migrations + seed, then trigger the{" "}
             <code className="text-emerald-300">refresh</code> GitHub Actions workflow to ingest the schedule.
           </p>
         ) : (

@@ -112,6 +112,7 @@ def run() -> list[dict]:
         m = scoreline_matrix(lam_h, lam_a)
         for market, selection, p in markets_from_matrix(m):
             row = {
+                "pipeline": config.PIPELINE_FREE,
                 "fixture_id": f["id"],
                 "market": market,
                 "selection": selection,

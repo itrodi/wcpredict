@@ -1,8 +1,10 @@
 import { notFound } from "next/navigation";
 
 import FixtureCard from "@/components/FixtureCard";
+import ModelSwitcher from "@/components/ModelSwitcher";
 import ProbabilityBar from "@/components/ProbabilityBar";
 import UpdatedBadge from "@/components/UpdatedBadge";
+import { basePipeline, PIPELINE_LABELS, resolvePipeline } from "@/lib/pipeline";
 import { supabaseServer } from "@/lib/supabase/server";
 import type { Fixture, MatchPrediction, Team, TournamentOdds } from "@/lib/types";
 
@@ -11,17 +13,30 @@ export const revalidate = 300;
 const FIXTURE_SELECT =
   "*, home:teams!fixtures_home_id_fkey(name,slug), away:teams!fixtures_away_id_fkey(name,slug)";
 
-export default async function TeamPage({ params }: { params: Promise<{ slug: string }> }) {
+export default async function TeamPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ slug: string }>;
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
   const { slug } = await params;
   const sb = supabaseServer();
   if (!sb) notFound();
+  const pipeline = await resolvePipeline(await searchParams, sb);
+  const simPipeline = basePipeline(pipeline); // sims exist per model pipeline only
 
   const { data: team } = await sb.from("teams").select("*").eq("slug", slug).maybeSingle();
   if (!team) notFound();
   const t = team as Team;
 
   const [{ data: oddsRow }, { data: fx }] = await Promise.all([
-    sb.from("tournament_odds").select("*").eq("team_id", t.id).maybeSingle(),
+    sb
+      .from("tournament_odds")
+      .select("*")
+      .eq("team_id", t.id)
+      .eq("pipeline", simPipeline) // pipeline filter mandatory post-v4 (spec §10)
+      .maybeSingle(),
     sb
       .from("fixtures")
       .select(FIXTURE_SELECT)
@@ -37,6 +52,7 @@ export default async function TeamPage({ params }: { params: Promise<{ slug: str
     const { data: preds } = await sb
       .from("match_predictions")
       .select("*")
+      .eq("pipeline", pipeline)
       .eq("market", "1x2")
       .in("fixture_id", upcomingIds);
     predictions = (preds as MatchPrediction[] | null) ?? [];
@@ -53,7 +69,12 @@ export default async function TeamPage({ params }: { params: Promise<{ slug: str
               {t.confederation ?? ""} · Elo <span className="font-mono text-zinc-300">{t.elo}</span>
             </p>
           </div>
-          {odds && <UpdatedBadge computedAt={odds.computed_at} />}
+          <div className="flex flex-col items-end gap-2">
+            <ModelSwitcher active={pipeline} />
+            {odds && (
+              <UpdatedBadge computedAt={odds.computed_at} label={PIPELINE_LABELS[simPipeline]} />
+            )}
+          </div>
         </div>
         {odds && (
           <div className="mt-5 space-y-2">

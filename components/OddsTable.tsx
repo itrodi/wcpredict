@@ -5,24 +5,34 @@ import { useEffect, useState } from "react";
 
 import UpdatedBadge from "@/components/UpdatedBadge";
 import { pct } from "@/lib/format";
+import { PIPELINE_LABELS } from "@/lib/pipeline";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import type { TournamentOdds } from "@/lib/types";
 
-/** Tournament odds table, live via Realtime (event "*" — see spec §6). */
-export default function OddsTable({ initial }: { initial: TournamentOdds[] }) {
+/** Tournament odds table, live via Realtime (event "*" — see spec §6).
+ * v4: rows belong to ONE pipeline; Realtime payloads from the other pipeline
+ * are dropped client-side (spec v4 §10: never mix pipelines silently). */
+export default function OddsTable({
+  initial,
+  pipeline,
+}: {
+  initial: TournamentOdds[];
+  pipeline: string;
+}) {
   const [rows, setRows] = useState<TournamentOdds[]>(initial);
 
   useEffect(() => {
+    setRows(initial);
     const sb = supabaseBrowser();
     if (!sb) return;
     const ch = sb
-      .channel("tournament-odds")
+      .channel(`tournament-odds-${pipeline}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "tournament_odds" },
         (payload) => {
           const next = payload.new as TournamentOdds;
-          if (!next?.team_id) return;
+          if (!next?.team_id || next.pipeline !== pipeline) return;
           setRows((prev) => {
             const i = prev.findIndex((r) => r.team_id === next.team_id);
             const copy = i === -1 ? [...prev, next] : [...prev];
@@ -35,7 +45,8 @@ export default function OddsTable({ initial }: { initial: TournamentOdds[] }) {
     return () => {
       sb.removeChannel(ch);
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pipeline]);
 
   if (rows.length === 0) {
     return (
@@ -48,7 +59,10 @@ export default function OddsTable({ initial }: { initial: TournamentOdds[] }) {
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <UpdatedBadge computedAt={rows[0]?.computed_at ?? null} />
+        <UpdatedBadge
+          computedAt={rows[0]?.computed_at ?? null}
+          label={PIPELINE_LABELS[pipeline]}
+        />
         <span className="text-xs text-zinc-600">{rows[0]?.n_sims?.toLocaleString()} Monte Carlo runs</span>
       </div>
       <div className="overflow-x-auto rounded-xl border border-pitch-700">

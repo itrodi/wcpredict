@@ -10,22 +10,12 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 from . import cache, config
+from .aliases import slugify
 from .db import sb
-from .ingest_fd import slugify
-
-# Odds API team names -> our slugs where slugification differs
-NAME_ALIASES = {
-    "usa": "united-states",
-    "south-korea": "korea-republic",
-    "ivory-coast": "cote-divoire",
-    "ir-iran": "iran",
-    "cabo-verde": "cape-verde",
-}
 
 
 def _resolve_slug(name: str, known_slugs: list[str]) -> str | None:
     s = slugify(name)
-    s = NAME_ALIASES.get(s, s)
     if s in known_slugs:
         return s
     close = difflib.get_close_matches(s, known_slugs, n=1, cutoff=0.8)

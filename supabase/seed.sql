@@ -48,7 +48,10 @@ insert into teams (slug, name, confederation, elo) values
   ('saudi-arabia',   'Saudi Arabia',   'AFC', 1640),
   ('qatar',          'Qatar',          'AFC', 1620),
   -- OFC
-  ('new-zealand', 'New Zealand', 'OFC', 1590)
+  ('new-zealand', 'New Zealand', 'OFC', 1590),
+  -- March 2026 playoff qualifiers (v4 addendum; safe to re-run — upsert on slug)
+  ('dr-congo', 'DR Congo', 'CAF',      1640),
+  ('haiti',    'Haiti',    'CONCACAF', 1500)
 on conflict (slug) do update
   set name = excluded.name,
       confederation = excluded.confederation;

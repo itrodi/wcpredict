@@ -26,8 +26,9 @@ export type Fixture = {
 
 export type MatchPrediction = {
   id: number;
+  pipeline: string;
   fixture_id: number;
-  market: "1x2" | "ou25" | "btts" | "cs";
+  market: string; // 1x2 | ou25 | btts | cs | ht_1x2 | ou05_1h | ou15_1h | htft | corners_* | team_corners_*
   selection: string;
   probability: number;
   fair_odds: number | null;
@@ -39,6 +40,7 @@ export type MatchPrediction = {
 
 export type TournamentOdds = {
   id: number;
+  pipeline: string;
   team_id: number;
   advance_grp: number | null;
   reach_qf: number | null;
@@ -49,4 +51,53 @@ export type TournamentOdds = {
   model_version: string | null;
   computed_at: string;
   teams?: Pick<Team, "name" | "slug" | "elo" | "group_code"> | null;
+};
+
+export type MatchStat = {
+  id: number;
+  fixture_id: number;
+  team_id: number;
+  is_home: boolean | null;
+  period: string;
+  shots: number | null;
+  shots_on_target: number | null;
+  corners: number | null;
+  possession: number | null;
+  xg: number | null;
+  npxg: number | null;
+  fouls: number | null;
+  yellows: number | null;
+  reds: number | null;
+  fetched_at: string;
+};
+
+export type Lineup = {
+  id: number;
+  fixture_id: number;
+  team_id: number;
+  formation: string | null;
+  starters: { player_id?: string; name: string; position?: string; shirt?: number }[];
+  bench: unknown;
+  confirmed: boolean;
+  fetched_at: string;
+};
+
+export type ModelScore = {
+  id: number;
+  pipeline: string;
+  market: string;
+  n: number;
+  brier: number | null;
+  log_loss: number | null;
+  computed_at: string;
+};
+
+export type OddsSnapshot = {
+  id: number;
+  fixture_id: number;
+  bookmaker: string;
+  market: string;
+  selection: string;
+  decimal_odds: number;
+  fetched_at: string;
 };

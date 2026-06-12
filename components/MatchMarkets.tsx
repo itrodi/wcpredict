@@ -4,7 +4,14 @@ import { useEffect, useMemo, useState } from "react";
 
 import ProbabilityBar from "@/components/ProbabilityBar";
 import UpdatedBadge from "@/components/UpdatedBadge";
-import { MARKET_LABELS, odds, pct, SELECTION_LABELS } from "@/lib/format";
+import {
+  EXPERIMENTAL_MARKETS,
+  MARKET_LABELS,
+  odds,
+  pct,
+  SELECTION_LABELS,
+} from "@/lib/format";
+import { PIPELINE_LABELS } from "@/lib/pipeline";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import type { MatchPrediction } from "@/lib/types";
 
@@ -12,23 +19,38 @@ const SELECTION_ORDER: Record<string, number> = {
   home: 0, draw: 1, away: 2, over: 0, under: 1, yes: 0, no: 1,
 };
 
+const MARKET_ORDER = [
+  "1x2", "ou25", "btts", "ht_1x2", "ou05_1h", "ou15_1h", "htft",
+  "corners_o85", "corners_o95", "corners_o105",
+  "team_corners_home_o45", "team_corners_away_o45", "cs",
+];
+
+const GRID_MARKETS = new Set(["cs", "htft"]);
+
 /** Full market breakdown with refresh-free updates via Realtime.
  * Subscribes to event "*" — the worker's upserts emit INSERTs the first time a
- * row is written, and an UPDATE-only subscription would silently miss them (spec §6). */
+ * row is written, and an UPDATE-only subscription would silently miss them.
+ * v4: rows are filtered to ONE pipeline (Realtime filters support a single
+ * column, so the pipeline filter is applied client-side on each payload). */
 export default function MatchMarkets({
   fixtureId,
+  pipeline,
   initial,
+  calibratedMarkets,
 }: {
   fixtureId: number;
+  pipeline: string;
   initial: MatchPrediction[];
+  calibratedMarkets: string[]; // markets with >= 30 scored matches in model_scores
 }) {
   const [rows, setRows] = useState<MatchPrediction[]>(initial);
 
   useEffect(() => {
+    setRows(initial);
     const sb = supabaseBrowser();
     if (!sb) return;
     const ch = sb
-      .channel(`mpred-${fixtureId}`)
+      .channel(`mpred-${fixtureId}-${pipeline}`)
       .on(
         "postgres_changes",
         {
@@ -39,7 +61,7 @@ export default function MatchMarkets({
         },
         (payload) => {
           const next = payload.new as MatchPrediction;
-          if (!next?.market) return;
+          if (!next?.market || next.pipeline !== pipeline) return;
           setRows((prev) => {
             const i = prev.findIndex(
               (r) => r.market === next.market && r.selection === next.selection
@@ -55,7 +77,8 @@ export default function MatchMarkets({
     return () => {
       sb.removeChannel(ch); // free tier: 200 concurrent connections — always unsubscribe
     };
-  }, [fixtureId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fixtureId, pipeline]);
 
   const byMarket = useMemo(() => {
     const m = new Map<string, MatchPrediction[]>();
@@ -74,21 +97,32 @@ export default function MatchMarkets({
 
   const computedAt = rows[0]?.computed_at ?? null;
   if (rows.length === 0) {
-    return <p className="text-sm text-zinc-500">No predictions yet — the engine has not run for this fixture.</p>;
+    return (
+      <p className="text-sm text-zinc-500">
+        No predictions from the {PIPELINE_LABELS[pipeline] ?? pipeline} pipeline for this fixture yet.
+      </p>
+    );
   }
 
   return (
     <div className="space-y-6">
-      <UpdatedBadge computedAt={computedAt} />
-      {(["1x2", "ou25", "btts", "cs"] as const).map((market) => {
+      <UpdatedBadge computedAt={computedAt} label={PIPELINE_LABELS[pipeline]} />
+      {MARKET_ORDER.map((market) => {
         const list = byMarket.get(market);
         if (!list) return null;
+        const experimental =
+          EXPERIMENTAL_MARKETS.has(market) && !calibratedMarkets.includes(market);
         return (
           <section key={market} className="rounded-xl border border-pitch-700 bg-pitch-900 p-4">
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-400">
-              {MARKET_LABELS[market]}
+            <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-zinc-400">
+              {MARKET_LABELS[market] ?? market}
+              {experimental && (
+                <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium normal-case tracking-normal text-amber-400">
+                  experimental — uncalibrated
+                </span>
+              )}
             </h3>
-            {market === "cs" ? (
+            {GRID_MARKETS.has(market) ? (
               <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
                 {list
                   .filter((r) => r.probability >= 0.005 || r.selection === "other")
@@ -96,7 +130,7 @@ export default function MatchMarkets({
                   .map((r) => (
                     <div key={r.selection} className="rounded-md bg-pitch-800 px-2 py-1.5 text-center">
                       <div className="font-mono text-sm text-zinc-100">
-                        {SELECTION_LABELS[r.selection] ?? r.selection}
+                        {SELECTION_LABELS[r.selection] ?? r.selection.replace("_", " / ")}
                       </div>
                       <div className="text-xs text-emerald-300">{pct(r.probability)}</div>
                     </div>

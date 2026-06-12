@@ -19,7 +19,26 @@ export const MARKET_LABELS: Record<string, string> = {
   ou25: "Over / Under 2.5 goals",
   btts: "Both teams to score",
   cs: "Correct score",
+  ht_1x2: "Half-time result",
+  ou05_1h: "1st half Over / Under 0.5",
+  ou15_1h: "1st half Over / Under 1.5",
+  htft: "Half-time / Full-time",
+  corners_o85: "Total corners 8.5",
+  corners_o95: "Total corners 9.5",
+  corners_o105: "Total corners 10.5",
+  team_corners_home_o45: "Home corners 4.5",
+  team_corners_away_o45: "Away corners 4.5",
 };
+
+/** Corners markets ship "experimental" until model_scores shows >=30 scored matches (spec v4 §5.2). */
+export const EXPERIMENTAL_MARKETS = new Set([
+  "corners_o85",
+  "corners_o95",
+  "corners_o105",
+  "team_corners_home_o45",
+  "team_corners_away_o45",
+]);
+export const EXPERIMENTAL_MIN_N = 30;
 
 export const SELECTION_LABELS: Record<string, string> = {
   home: "Home",

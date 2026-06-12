@@ -1,7 +1,25 @@
 # WC Predict — 2026 World Cup prediction app
 
-Elo→Poisson match predictions + Monte Carlo tournament simulation for the 2026 FIFA World Cup.
-Runs entirely on free tiers: **Next.js on Vercel + Supabase + Python engine on GitHub Actions**.
+Match predictions + Monte Carlo tournament simulation for the 2026 FIFA World Cup.
+**Next.js on Vercel + Supabase + Python engine on GitHub Actions.**
+
+v4 runs **two pipelines side by side** over the same tournament so their predictions can be
+compared with data instead of vibes:
+
+- **Pipeline A — `free`** (the v3 stack, untouched, forever the fallback): football-data.org
+  fixtures/results + The Odds API 1X2 odds → results-Elo → Poisson markets.
+- **Pipeline B — `statsapi`** (paid, stats-only plan): TheStatsAPI match stats (xG, corners,
+  shots, lineups) → xG-adjusted Elo → Dixon-Coles Poisson + first-half markets + a
+  negative-binomial corners model. Odds still come from The Odds API (the stats plan has no
+  odds endpoints).
+- **Blends** (`blend_free`, `blend_statsapi`): `p = 0.7·p_market + 0.3·p_model` on 1X2.
+- **`market`**: de-vigged closing odds, logged as the baseline both models must beat.
+
+Every prediction row carries a `pipeline` discriminator; the UI has a global model switcher
+(`?model=`), a per-match compare view (`/matches/[id]/compare`), a public scoreboard
+(`/models`, Brier/log-loss per pipeline per market), a value finder (`/value`) and an
+identity-mapping health page (`/admin/health`). If TheStatsAPI breaks, the engine degrades
+to Pipeline A automatically.
 
 ## Architecture (two planes)
 
@@ -18,17 +36,41 @@ Runs entirely on free tiers: **Next.js on Vercel + Supabase + Python engine on G
 
 1. **Supabase** — create a free project, then in the SQL editor run, in order:
    - `supabase/migrations/0001_init.sql` (schema, RLS, Realtime publication)
+   - `supabase/migrations/0002_dual_pipeline.sql` (v4: pipeline column, xmap tables,
+     match_stats/lineups/model_scores — additive only)
    - `supabase/seed.sql` (teams + initial Elo from eloratings.net; groups are filled by the
      first ingest run, and any missing team — e.g. playoff winners — is created automatically)
 2. **API keys** — register at [football-data.org](https://www.football-data.org/client/register)
    (free token, includes `WC`) and [the-odds-api.com](https://the-odds-api.com) (free 500
-   credits/month).
+   credits/month). For Pipeline B: a TheStatsAPI key (paid, stats-only plan).
 3. **GitHub Actions secrets** (repo → Settings → Secrets and variables → Actions):
-   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `FOOTBALL_DATA_ORG_TOKEN`, `ODDS_API_KEY`.
+   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `FOOTBALL_DATA_ORG_TOKEN`, `ODDS_API_KEY`,
+   and `STATSAPI_KEY` (optional — without it the engine runs Pipeline A only).
 4. **Vercel** — import the repo, set `NEXT_PUBLIC_SUPABASE_URL` and
    `NEXT_PUBLIC_SUPABASE_ANON_KEY` (publishable key).
 5. **First populate** — trigger the `refresh` workflow manually (Actions tab → refresh →
    Run workflow). A second run with a browser tab open should show Realtime updates land.
+
+### Pipeline B: run these INSIDE the 7-day TheStatsAPI trial
+
+```bash
+# Phase 0 gate — writes docs/statsapi-verification.md; checks 3,5,6 must PASS
+STATSAPI_KEY=... python -m engine.verify_statsapi
+
+# Calibration sprint — fits DC rho / first-half share / corners NB from 2018+2022
+# history, backtests on WC 2022, writes docs/backtest-2022.md. Pipeline B may only
+# become the site default if it beats A on 1X2 log-loss here.
+STATSAPI_KEY=... python -m engine.calibrate
+```
+
+Paste the fitted parameters from `engine.calibrate` as env overrides in
+`.github/workflows/refresh.yml` (all model knobs in `engine/config.py:MODEL_PARAMS` are
+env-overridable). The exact TheStatsAPI payload field names are confirmed by the verify
+script — if its report shows different keys, adjust the `pick(...)` calls in
+`engine/statsapi.py` / `engine/ingest_statsapi.py`.
+
+A second workflow, `live.yml`, polls live match stats every 5 minutes during June–July and
+self-exits when nothing is in play; stats tick into open match pages via Realtime.
 
 ### Run the engine locally
 

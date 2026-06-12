@@ -22,6 +22,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <div className="flex gap-5 text-sm text-zinc-400">
               <Link href="/" className="hover:text-accent">Matches</Link>
               <Link href="/tournament" className="hover:text-accent">Simulator</Link>
+              <Link href="/models" className="hover:text-accent">Models</Link>
+              <Link href="/value" className="hover:text-accent">Value</Link>
             </div>
           </nav>
         </header>

@@ -3,13 +3,12 @@
 2-3 requests per run, cached in api_cache, calls spaced >=6.5s apart (free tier: 10/min).
 Creates teams the seed didn't know (e.g. playoff winners) with DEFAULT_ELO.
 """
-import re
 import time
-import unicodedata
 
 import requests
 
 from . import cache, config
+from .aliases import slugify
 from .db import sb
 
 _last_call = 0.0
@@ -37,22 +36,6 @@ STATUS_MAP = {
 }
 
 HOST_SLUGS = {"united-states", "canada", "mexico"}
-
-# football-data.org names -> our seed slugs where plain slugification differs
-SLUG_ALIASES = {
-    "usa": "united-states",
-    "south-korea": "korea-republic",
-    "ivory-coast": "cote-divoire",
-    "cabo-verde": "cape-verde",
-    "ir-iran": "iran",
-    "turkiye": "turkey",
-}
-
-
-def slugify(name: str) -> str:
-    s = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
-    s = re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
-    return SLUG_ALIASES.get(s, s)
 
 
 def _fd_get(path: str, ttl: int = config.FD_CACHE_TTL_S):
@@ -98,9 +81,11 @@ def run():
             if not name:
                 continue  # knockout slot not yet determined
             slug = slugify(name)
-            entry = seen.setdefault(slug, {"name": name, "group_code": None})
+            entry = seen.setdefault(slug, {"name": name, "group_code": None, "fd_id": None})
             if gc:
                 entry["group_code"] = gc
+            if t.get("id") is not None:
+                entry["fd_id"] = str(t["id"])
 
     existing = {t["slug"]: t for t in sb().table("teams").select("id, slug, group_code").execute().data}
     inserts, updates = [], []
@@ -124,6 +109,15 @@ def run():
         sb().table("teams").update(patch).eq("id", team_id).execute()
 
     team_ids = {t["slug"]: t["id"] for t in sb().table("teams").select("id, slug").execute().data}
+
+    # cross-vendor identity map, fd side (v4 §4). Upserting only fd_id preserves statsapi_id.
+    xmap_rows = [
+        {"team_id": team_ids[slug], "fd_id": info["fd_id"]}
+        for slug, info in seen.items()
+        if info.get("fd_id") and slug in team_ids
+    ]
+    if xmap_rows:
+        sb().table("xmap_teams").upsert(xmap_rows, on_conflict="team_id").execute()
 
     # ---- fixtures: upsert by ext_id (elo_applied intentionally omitted -> preserved) ----
     rows = []
@@ -153,6 +147,11 @@ def run():
     for batch in _chunks(rows, 500):
         sb().table("fixtures").upsert(batch, on_conflict="ext_id").execute()
     print(f"[ingest_fd] upserted {len(rows)} fixtures")
+
+    fx = sb().table("fixtures").select("id, ext_id").execute().data
+    xfix = [{"fixture_id": f["id"], "fd_id": f["ext_id"]} for f in fx if f["ext_id"]]
+    for batch in _chunks(xfix, 500):
+        sb().table("xmap_fixtures").upsert(batch, on_conflict="fixture_id").execute()
 
 
 def _chunks(rows, size):
