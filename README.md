@@ -102,9 +102,10 @@ npm run dev
 - **Elo**: seeded from eloratings.net, refreshed from finished results only (K=50,
   goal-difference multiplier, +100 home advantage for USA/Canada/Mexico at home). Each result
   is applied once, tracked by `fixtures.elo_applied`.
-- **Match markets**: the Elo win expectancy splits a fixed 2.6 expected-total-goals into two
-  Poisson rates; an 11×11 scoreline matrix yields 1X2, O/U 2.5, BTTS and correct score.
-  Latest book h2h prices are de-vigged to give `edge` on the 1X2 market.
+- **Match markets**: the Elo gap sets two Poisson rates (`λ = 1.3·e^(±β·dr)`) — even matches
+  expect 2.6 total goals, mismatches more; an 11×11 scoreline matrix yields 1X2, O/U 2.5,
+  BTTS and correct score. Latest book h2h prices are de-vigged to give `edge`.
+  Model-math invariants are enforced by `python -m engine.tests` (63 checks).
 - **Tournament sim**: vectorised numpy Monte Carlo. Finished results are fixed; group ranking
   uses points → goal difference → goals for → random. Top 2 + 8 best thirds advance (48-team
   format). Knockout rounds use the **real bracket pairings once football-data.org publishes

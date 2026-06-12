@@ -56,9 +56,12 @@ without code changes.
 (1 / 1.5 / (11+gd)/8), +100 home advantage only when `host_home`. Updated from
 finished results once each (`elo_applied`).
 
-**Elo → goals**: win expectancy `w = 1/(1+10^(−dr/400))` splits a fixed
-expected total `TOTAL_GOALS = 2.6` into `λ_home = 2.6·w`, `λ_away = 2.6·(1−w)`,
-clipped to [0.25, 3.5].
+**Elo → goals (v2)**: `λ_home = 1.3·e^(+β·dr)`, `λ_away = 1.3·e^(−β·dr)`
+(β = `ELO_GOAL_BETA`, default 0.002), clipped to [0.2, 4.0]. Even matches keep
+the 2.6 expected total; strength gaps raise it (a 600-point mismatch expects
+~4.4 goals). The v1 mapping split a *fixed* total by win expectancy, which made
+every totals market (O/U 2.5, 1H totals, the corners mean) constant across
+fixtures — `python -m engine.tests` guards against that regressing.
 
 **Markets** from an 11×11 independent-Poisson scoreline matrix (renormalised):
 1X2, O/U 2.5, BTTS, correct score (0–4 each way + `other`).

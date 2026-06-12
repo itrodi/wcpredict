@@ -40,7 +40,7 @@ mixes silently.
 | Match model | Elo→Poisson | xG-Elo→Dixon-Coles Poisson |
 | Markets | 1x2, O/U 2.5, BTTS, correct score | A's markets **plus** HT 1X2, 1H O/U 0.5 & 1.5, HT/FT, total + team corners |
 | Tournament sim | yes (`tournament_odds.pipeline='free'`) | yes (`'statsapi'`) |
-| Model version | `elo-poisson-v1` | `xgelo-dc-v1` |
+| Model version | `elo-poisson-v2` | `xgelo-dc-v2` |
 
 Derived pipelines (1X2 only):
 

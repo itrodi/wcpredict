@@ -107,6 +107,15 @@ def upsert_tournament_odds(rows: list[dict]):
         sb().table("tournament_odds").upsert(
             batch, on_conflict="pipeline,team_id,model_version"
         ).execute()
+    # model_version is part of the unique key, so a version bump would leave
+    # stale rows behind and double the tournament table — prune superseded ones
+    if rows:
+        pipelines = {r["pipeline"] for r in rows}
+        version = rows[0]["model_version"]
+        for p in pipelines:
+            sb().table("tournament_odds").delete().eq("pipeline", p).neq(
+                "model_version", version
+            ).execute()
     print(f"[write_db] upserted {len(rows)} tournament_odds")
 
 

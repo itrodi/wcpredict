@@ -23,8 +23,8 @@ PIPELINE_BLEND_FREE = "blend_free"
 PIPELINE_BLEND_STATSAPI = "blend_statsapi"
 PIPELINE_MARKET = "market"
 
-MODEL_VERSION = "elo-poisson-v1"          # Pipeline A
-MODEL_VERSION_B = "xgelo-dc-v1"           # Pipeline B
+MODEL_VERSION = "elo-poisson-v2"          # Pipeline A (v2: matchup-dependent goal totals)
+MODEL_VERSION_B = "xgelo-dc-v2"           # Pipeline B
 
 # Elo (World Football Elo conventions; K=50 ≈ continental championship weight)
 ELO_K = 50
@@ -32,8 +32,8 @@ ELO_HOME_ADV = 100          # applied only when host_home (USA/CAN/MEX playing a
 DEFAULT_ELO = 1600          # teams created by ingest that the seed didn't know
 
 # Elo -> Poisson
-TOTAL_GOALS = 2.6           # expected total goals in an evenly matched WC game
-LAMBDA_MIN, LAMBDA_MAX = 0.25, 3.5
+TOTAL_GOALS = 2.6           # expected total goals in an EVENLY MATCHED WC game
+LAMBDA_MIN, LAMBDA_MAX = 0.2, 4.0
 GOAL_GRID = 11              # scoreline matrix is 0..10 goals per side
 
 # Monte Carlo
@@ -45,6 +45,11 @@ MODEL_PARAMS = {
     "XG_ELO_W_RESULT": _f("XG_ELO_W_RESULT", 0.6),
     "XG_ELO_W_XG": _f("XG_ELO_W_XG", 0.4),
     "XG_ELO_K": _f("XG_ELO_K", 50),
+    # match_model: lambda_home = (TOTAL_GOALS/2) * exp(+beta*dr), away exp(-beta*dr).
+    # v1 split a FIXED total by win expectancy, which made every totals market
+    # (O/U 2.5, 1H totals, corners mean) constant across fixtures — the bug fix
+    # is that strength gaps now raise the expected total (mismatch -> more goals)
+    "ELO_GOAL_BETA": _f("ELO_GOAL_BETA", 0.002),
     # match_model_b.py: Dixon-Coles low-score correction
     "DC_RHO": _f("DC_RHO", -0.1),
     # first-half goal share: lambda_1H = share * lambda_FT

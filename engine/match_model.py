@@ -10,12 +10,21 @@ from .db import sb
 
 
 def elo_lambdas(elo_home: float, elo_away: float, host_home: bool) -> tuple[float, float]:
-    """Map an Elo gap to Poisson goal rates. v1 heuristic: split a fixed expected
-    total by the Elo win expectancy, clipped to sane bounds."""
+    """Map an Elo gap to Poisson goal rates (v2).
+
+    lambda_home = (TOTAL_GOALS/2) * exp(+beta*dr)
+    lambda_away = (TOTAL_GOALS/2) * exp(-beta*dr)
+
+    Even matches keep the TOTAL_GOALS expected total; strength gaps RAISE the
+    total (the favourite's rate grows faster than the underdog's shrinks), so
+    totals markets vary by matchup. The v1 fixed-total split made P(over 2.5)
+    identical for every fixture — sum of independent Poissons depends only on
+    lambda_h + lambda_a, which v1 held constant by construction."""
     dr = elo_home - elo_away + (config.ELO_HOME_ADV if host_home else 0)
-    w = 1.0 / (1.0 + 10 ** (-dr / 400.0))
-    lam_h = min(max(config.TOTAL_GOALS * w, config.LAMBDA_MIN), config.LAMBDA_MAX)
-    lam_a = min(max(config.TOTAL_GOALS * (1.0 - w), config.LAMBDA_MIN), config.LAMBDA_MAX)
+    base = config.TOTAL_GOALS / 2.0
+    beta = config.MODEL_PARAMS["ELO_GOAL_BETA"]
+    lam_h = min(max(base * math.exp(beta * dr), config.LAMBDA_MIN), config.LAMBDA_MAX)
+    lam_a = min(max(base * math.exp(-beta * dr), config.LAMBDA_MIN), config.LAMBDA_MAX)
     return lam_h, lam_a
 
 
