@@ -18,8 +18,9 @@ def run():
         batch = (
             sb()
             .table("prediction_log")
-            .select("pipeline, market, fixture_id, probability, outcome")
+            .select("id, pipeline, market, fixture_id, selection, probability, outcome")
             .not_.is_("outcome", "null")
+            .order("id")
             .range(offset, offset + page - 1)
             .execute()
             .data
@@ -31,6 +32,19 @@ def run():
     if not rows:
         print("[compare] nothing logged yet")
         return
+
+    # defensive dedupe (earliest row wins): duplicated log rows would overweight
+    # their fixtures in every Brier/log-loss average on the public scoreboard
+    seen: set = set()
+    unique_rows = []
+    for r in rows:
+        key = (r["pipeline"], r["fixture_id"], r["market"], r["selection"])
+        if key not in seen:
+            seen.add(key)
+            unique_rows.append(r)
+    if len(unique_rows) < len(rows):
+        print(f"[compare] WARNING: dropped {len(rows) - len(unique_rows)} duplicate prediction_log rows")
+    rows = unique_rows
 
     grouped: dict[tuple[str, str], list] = defaultdict(list)
     for r in rows:

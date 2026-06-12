@@ -137,13 +137,13 @@ def _latest_corners_odds(fixture_ids: list[int]) -> dict:
     (v4.1 §5.0). Empty dict when no such snapshots exist."""
     from collections import defaultdict
     out: dict = {}
-    for i in range(0, len(fixture_ids), 50):
+    for i in range(0, len(fixture_ids), 5):
         snaps = (
             sb().table("odds_snapshots")
             .select("fixture_id, market, selection, decimal_odds, fetched_at")
-            .in_("fixture_id", fixture_ids[i : i + 50])
+            .in_("fixture_id", fixture_ids[i : i + 5])
             .eq("source", "statsapi").like("market", "corners%")
-            .order("fetched_at", desc=True).limit(2000)
+            .order("fetched_at", desc=True).limit(1000)
             .execute().data
         )
         latest: dict = {}
@@ -170,7 +170,7 @@ def run() -> list[dict]:
         sb()
         .table("fixtures")
         .select("id, home_id, away_id, host_home, status")
-        .neq("status", "finished")
+        .eq("status", "scheduled")  # freeze at kickoff — see match_model.run
         .execute()
         .data
     )

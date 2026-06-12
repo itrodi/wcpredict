@@ -9,7 +9,9 @@ from . import config
 from .db import sb
 
 
-def elo_lambdas(elo_home: float, elo_away: float, host_home: bool) -> tuple[float, float]:
+def elo_lambdas(
+    elo_home: float, elo_away: float, host_home: bool, beta: float | None = None
+) -> tuple[float, float]:
     """Map an Elo gap to Poisson goal rates (v2).
 
     lambda_home = (TOTAL_GOALS/2) * exp(+beta*dr)
@@ -22,7 +24,8 @@ def elo_lambdas(elo_home: float, elo_away: float, host_home: bool) -> tuple[floa
     lambda_h + lambda_a, which v1 held constant by construction."""
     dr = elo_home - elo_away + (config.ELO_HOME_ADV if host_home else 0)
     base = config.TOTAL_GOALS / 2.0
-    beta = config.MODEL_PARAMS["ELO_GOAL_BETA"]
+    if beta is None:
+        beta = config.MODEL_PARAMS["ELO_GOAL_BETA"]
     lam_h = min(max(base * math.exp(beta * dr), config.LAMBDA_MIN), config.LAMBDA_MAX)
     lam_a = min(max(base * math.exp(-beta * dr), config.LAMBDA_MIN), config.LAMBDA_MAX)
     return lam_h, lam_a
@@ -65,10 +68,14 @@ def markets_from_matrix(m: np.ndarray) -> list[tuple[str, str, float]]:
 
 def _latest_devigged_h2h(fixture_ids: list[int]) -> dict[int, dict[str, tuple[float, float]]]:
     """fixture_id -> selection -> (median_decimal_odds, devigged_probability),
-    using only each fixture's most recent fetch batch."""
+    using only each fixture's most recent fetch batch.
+
+    Small batches: ~20 books x 3 selections x 5 fixtures per pull keeps every
+    in-batch fixture's latest pull comfortably inside the 1000-row window (the
+    old 50-fixture/2000-row version could silently drop fixtures)."""
     out: dict[int, dict[str, tuple[float, float]]] = {}
-    for i in range(0, len(fixture_ids), 50):
-        batch = fixture_ids[i : i + 50]
+    for i in range(0, len(fixture_ids), 5):
+        batch = fixture_ids[i : i + 5]
         snaps = (
             sb()
             .table("odds_snapshots")
@@ -76,7 +83,7 @@ def _latest_devigged_h2h(fixture_ids: list[int]) -> dict[int, dict[str, tuple[fl
             .in_("fixture_id", batch)
             .eq("market", "h2h")
             .order("fetched_at", desc=True)
-            .limit(2000)
+            .limit(1000)
             .execute()
             .data
         )
@@ -98,13 +105,17 @@ def _latest_devigged_h2h(fixture_ids: list[int]) -> dict[int, dict[str, tuple[fl
 
 
 def run() -> list[dict]:
-    """Build match_predictions rows for all not-yet-finished fixtures with known teams."""
+    """Build match_predictions rows for upcoming fixtures with known teams.
+
+    Scheduled only: once a match kicks off (status 'live') its last pre-match
+    row is frozen — recomputing mid-match would leak in-play odds into the
+    logged edge and the 'market' closing-odds baseline."""
     teams = {t["id"]: t for t in sb().table("teams").select("id, elo").execute().data}
     fixtures = (
         sb()
         .table("fixtures")
         .select("id, home_id, away_id, host_home, status")
-        .neq("status", "finished")
+        .eq("status", "scheduled")
         .execute()
         .data
     )

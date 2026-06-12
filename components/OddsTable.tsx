@@ -71,6 +71,7 @@ export default function OddsTable({
               <th className="px-3 py-2.5">Team</th>
               <th className="px-3 py-2.5 text-right">Elo</th>
               <th className="px-3 py-2.5 text-right">Advance</th>
+              <th className="px-3 py-2.5 text-right">R16</th>
               <th className="px-3 py-2.5 text-right">QF</th>
               <th className="px-3 py-2.5 text-right">SF</th>
               <th className="px-3 py-2.5 text-right">Final</th>
@@ -92,6 +93,7 @@ export default function OddsTable({
                 </td>
                 <td className="px-3 py-2 text-right font-mono text-zinc-400">{r.teams?.elo ?? "–"}</td>
                 <td className="px-3 py-2 text-right font-mono text-zinc-300">{pct(r.advance_grp)}</td>
+                <td className="px-3 py-2 text-right font-mono text-zinc-300">{pct(r.reach_r16)}</td>
                 <td className="px-3 py-2 text-right font-mono text-zinc-300">{pct(r.reach_qf)}</td>
                 <td className="px-3 py-2 text-right font-mono text-zinc-300">{pct(r.reach_sf)}</td>
                 <td className="px-3 py-2 text-right font-mono text-zinc-300">{pct(r.reach_final)}</td>

@@ -20,7 +20,7 @@ export default async function Tournament({
     const { data } = await sb
       .from("tournament_odds")
       .select(
-        "id, pipeline, team_id, advance_grp, reach_qf, reach_sf, reach_final, champion, n_sims, model_version, computed_at, teams(name, slug, elo, group_code)"
+        "id, pipeline, team_id, advance_grp, reach_r16, reach_qf, reach_sf, reach_final, champion, n_sims, model_version, computed_at, teams(name, slug, elo, group_code)"
       )
       .eq("pipeline", view.modelPipeline)
       .order("champion", { ascending: false });

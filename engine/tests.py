@@ -148,9 +148,53 @@ def main():
           and settle_outcome("team_corners_home_o45", "over", 1, 0, 5, 2) is True)
     check("unsettleable markets return None", settle_outcome("corners_o95", "over", 1, 0) is None
           and settle_outcome("ht_1x2", "home", 2, 1) is None)
+    # 90' markets vs football-data fullTime that includes extra time
+    check("ET match settles 1x2 as the 90' draw",
+          settle_outcome("1x2", "draw", 2, 1, duration="EXTRA_TIME") is True
+          and settle_outcome("1x2", "home", 2, 1, duration="EXTRA_TIME") is False)
+    check("ET match goal markets unsettleable (no 90' score)",
+          settle_outcome("ou25", "over", 2, 1, duration="EXTRA_TIME") is None
+          and settle_outcome("cs", "2-1", 2, 1, duration="PENALTY_SHOOTOUT") is None
+          and settle_outcome("corners_o95", "over", 1, 1, 6, 5, "EXTRA_TIME") is None)
+    # first-half markets settle from the stored HT score
+    check("ht_1x2 settles with HT score",
+          settle_outcome("ht_1x2", "home", 2, 1, ht_hg=1, ht_ag=0) is True
+          and settle_outcome("ht_1x2", "draw", 2, 1, ht_hg=0, ht_ag=0) is True)
+    check("1H totals settle with HT score",
+          settle_outcome("ou05_1h", "over", 2, 1, ht_hg=1, ht_ag=0) is True
+          and settle_outcome("ou15_1h", "under", 2, 1, ht_hg=1, ht_ag=0) is True)
+    check("htft settles (incl. ET as 90' draw)",
+          settle_outcome("htft", "draw_home", 2, 1, ht_hg=0, ht_ag=0) is True
+          and settle_outcome("htft", "home_draw", 2, 1, ht_hg=1, ht_ag=0, duration="EXTRA_TIME") is True)
+
+    print("== Official bracket (R32 slots + thirds allocation) ==")
+    from itertools import combinations
+
+    from . import simulate
+    slot_strings = [s for pair in simulate.R32_SLOTS.values() for s in pair]
+    check("every group winner appears exactly once",
+          sorted(s[1] for s in slot_strings if s.startswith("1")) == list("ABCDEFGHIJKL"))
+    check("every runner-up appears exactly once",
+          sorted(s[1] for s in slot_strings if s.startswith("2")) == list("ABCDEFGHIJKL"))
+    check("exactly 8 third-place slots",
+          sum(1 for s in slot_strings if s == "T") == 8
+          and set(simulate.R32_THIRD_GROUPS) == {m for m, p in simulate.R32_SLOTS.items() if "T" in p})
+    r16_sources = sorted(m for pair in simulate.R16_MAP.values() for m in pair)
+    check("R16 consumes each R32 match once", r16_sources == sorted(simulate.R32_SLOTS))
+    qf_sources = sorted(m for pair in simulate.QF_MAP.values() for m in pair)
+    check("QF consumes each R16 match once", qf_sources == sorted(simulate.R16_MAP))
+    sf_sources = sorted(m for pair in simulate.SF_MAP.values() for m in pair)
+    check("SF consumes each QF match once", sf_sources == sorted(simulate.QF_MAP))
+    check("final consumes both semis", sorted(simulate.FINAL) == sorted(simulate.SF_MAP))
+    ok_combos = 0
+    for combo in combinations("ABCDEFGHIJKL", 8):
+        assign = simulate.third_assignment(tuple(combo))
+        if (sorted(assign.values()) == sorted(combo)
+                and all(g in simulate.R32_THIRD_GROUPS[m] for m, g in assign.items())):
+            ok_combos += 1
+    check("thirds allocation valid for all 495 scenarios", ok_combos == 495, f"{ok_combos}/495")
 
     print("== Simulation invariants ==")
-    from . import simulate
     teams = [{"id": gi * 4 + k + 1, "elo": 1950 - gi * 10 - k * 80, "elo_xg": None,
               "group_code": chr(ord("A") + gi)} for gi in range(12) for k in range(4)]
 
@@ -170,7 +214,12 @@ def main():
     check("48 teams simulated", len(rows) == 48)
     check("champion probs sum to 1", abs(sum(r["champion"] for r in rows) - 1) < 0.01)
     check("32 teams advance on average", abs(sum(r["advance_grp"] for r in rows) - 32) < 0.1)
+    check("16 teams reach R16 on average", abs(sum(r["reach_r16"] for r in rows) - 16) < 0.1)
+    check("8 quarter-finalists on average", abs(sum(r["reach_qf"] for r in rows) - 8) < 0.1)
     check("2 finalists on average", abs(sum(r["reach_final"] for r in rows) - 2) < 0.05)
+    check("monotone funnel per team", all(
+        r["advance_grp"] >= r["reach_r16"] >= r["reach_qf"] >= r["reach_sf"]
+        >= r["reach_final"] >= r["champion"] for r in rows))
     strongest = next(r for r in rows if r["team_id"] == 1)
     weakest = next(r for r in rows if r["team_id"] == 48)
     check("strength ordering respected", strongest["champion"] > weakest["champion"]

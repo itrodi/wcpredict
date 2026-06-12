@@ -55,7 +55,7 @@ def run():
         sb()
         .table("fixtures")
         .select("id, home_id, away_id, kickoff")
-        .neq("status", "finished")
+        .eq("status", "scheduled")
         .execute()
         .data
     )
@@ -64,7 +64,8 @@ def run():
         if f["home_id"] and f["away_id"]:
             by_pair.setdefault((f["home_id"], f["away_id"]), []).append(f)
 
-    now = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
     snapshots = []
     for ev in events:
         hs = _resolve_slug(ev.get("home_team", ""), known_slugs)
@@ -72,6 +73,8 @@ def run():
         if not hs or not as_:
             continue
         commence = datetime.fromisoformat(ev["commence_time"].replace("Z", "+00:00"))
+        if commence <= now_dt:
+            continue  # already kicked off: these are in-play prices, not closing odds
         candidates = by_pair.get((slug_to_id[hs], slug_to_id[as_]), [])
         fixture = next(
             (

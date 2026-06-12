@@ -10,14 +10,18 @@ Discipline rules (non-negotiable):
 - every pick settles publicly (write_db.settle_picks)
 
 Tiers:
-  Banker: p >= 0.65 and edge >= -0.01 (model not worse than market), conf = p
-  Value:  edge >= 0.04 and p >= 0.25, scored by Kelly f = edge / (odds - 1)
+  Banker: p >= 0.65 and edge >= -0.01 (model not worse than market), conf = p.
+          1x2 bankers come from the blend (market-anchored confidence).
+  Value:  model-pipeline probability vs the QUOTED odds — a pick must clear the
+          vig, not just the de-vigged price: p * odds > 1, plus edge >= 0.04
+          and p >= 0.25. Scored by the true Kelly fraction
+          f = (p*odds - 1) / (odds - 1).
 Caps: max 2 picks per fixture, max 10 live per tier.
 """
 from datetime import datetime, timedelta, timezone
 
 from . import config
-from .db import sb
+from .db import fetch_all, sb
 
 HORIZON_DAYS = 14
 ALWAYS_CALIBRATED = {"1x2", "ou25", "btts"}
@@ -76,21 +80,31 @@ def _rationale(row: dict, fixture: dict, signals: dict, movement: dict) -> list[
 
 
 def _line_movement(fixture_ids: list[int]) -> dict:
-    """(fixture_id, selection) -> (opening_median, latest_median) for h2h."""
+    """(fixture_id, selection) -> (opening_odds, latest_odds) for h2h.
+
+    One asc + one desc page per small batch: the snapshot table outgrows the
+    1000-row cap fast, so 'first 1000 ascending' alone misses the latest pull."""
     out = {}
-    for i in range(0, len(fixture_ids), 50):
-        snaps = (
-            sb().table("odds_snapshots")
-            .select("fixture_id, selection, decimal_odds, fetched_at")
-            .in_("fixture_id", fixture_ids[i : i + 50]).eq("market", "h2h")
-            .order("fetched_at").execute().data
-        )
-        series: dict = {}
-        for s in snaps:
-            series.setdefault((s["fixture_id"], s["selection"]), []).append(float(s["decimal_odds"]))
-        for k, v in series.items():
-            if len(v) >= 2:
-                out[k] = (v[0], v[-1])
+    for i in range(0, len(fixture_ids), 5):
+        batch = fixture_ids[i : i + 5]
+
+        def _page(desc: bool):
+            return (
+                sb().table("odds_snapshots")
+                .select("fixture_id, selection, decimal_odds, fetched_at")
+                .in_("fixture_id", batch).eq("market", "h2h")
+                .order("fetched_at", desc=desc).limit(1000).execute().data
+            )
+
+        opening: dict = {}
+        for s in _page(desc=False):
+            opening.setdefault((s["fixture_id"], s["selection"]), float(s["decimal_odds"]))
+        latest: dict = {}
+        for s in _page(desc=True):
+            latest.setdefault((s["fixture_id"], s["selection"]), float(s["decimal_odds"]))
+        for k, opening_odds in opening.items():
+            if k in latest and latest[k] != opening_odds:
+                out[k] = (opening_odds, latest[k])
     return out
 
 
@@ -115,26 +129,37 @@ def run():
         .gte("n", config.EXPERIMENTAL_MIN_N).execute().data
     }
 
-    preds = (
-        sb().table("match_predictions").select("*")
+    preds = fetch_all(
+        lambda: sb().table("match_predictions").select("*")
         .in_("pipeline", [blend_pipe, model_pipe])
         .in_("fixture_id", list(fx)).not_.is_("edge", "null")
-        .execute().data
+        .order("id")
     )
-    # site view: blend rows own 1x2; the model pipeline owns everything else
-    preds = [
-        r for r in preds
-        if (r["market"] == "1x2") == (r["pipeline"] == blend_pipe) and r["market"] in calibrated
-    ]
+    preds = [r for r in preds if r["market"] in calibrated]
+    # bankers: blend owns 1x2 (market-anchored), model pipeline owns the rest.
+    # value: always judged on the MODEL row — the blend shrinks edge by
+    # (1 - w_market), which would suppress every 1x2 value pick by construction.
+    banker_rows = [r for r in preds if (r["market"] == "1x2") == (r["pipeline"] == blend_pipe)]
+    value_rows = [r for r in preds if r["pipeline"] == model_pipe]
 
-    candidates = []
-    for r in preds:
+    candidates, banker_keys = [], set()
+    for r in banker_rows:
         p, edge = float(r["probability"]), float(r["edge"])
-        odds = float(r["market_odds"]) if r["market_odds"] else None
         if p >= BANKER_P and edge >= BANKER_EDGE_MIN:
             candidates.append({**r, "tier": "banker", "score": p})
-        elif edge >= VALUE_EDGE_MIN and p >= VALUE_P_MIN and odds and odds > 1:
-            candidates.append({**r, "tier": "value", "score": edge / (odds - 1)})
+            banker_keys.add((r["fixture_id"], r["market"], r["selection"]))
+    for r in value_rows:
+        key = (r["fixture_id"], r["market"], r["selection"])
+        if key in banker_keys:
+            continue
+        p, edge = float(r["probability"]), float(r["edge"])
+        odds = float(r["market_odds"]) if r["market_odds"] else None
+        if odds is None or odds <= 1:
+            continue
+        # positive EV at the QUOTED price, not just vs the de-vigged probability
+        if edge >= VALUE_EDGE_MIN and p >= VALUE_P_MIN and p * odds > 1:
+            kelly = (p * odds - 1) / (odds - 1)
+            candidates.append({**r, "tier": "value", "score": kelly})
 
     candidates.sort(key=lambda c: c["score"], reverse=True)
     chosen, per_fixture, per_tier = [], {}, {"banker": 0, "value": 0}

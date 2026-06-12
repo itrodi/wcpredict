@@ -8,6 +8,9 @@ Schema lives in `supabase/migrations/` and must be run in order:
 3. `0003_v41.sql` — v4.1, additive: `ops_status`, `picks` (+ Realtime), `shots`,
    `team_signals`, `players`, `referee_signals`, `fixtures.referee`,
    `lineups.strength`/`key_absences`, `odds_snapshots.source`.
+4. `0004_v42.sql` — v4.2, additive: `fixtures.duration`/`winner_id`/
+   `ht_home_goals`/`ht_away_goals` (90-minute settlement + pens winners),
+   `tournament_odds.reach_r16`, plus a one-off dedupe of `prediction_log`.
 
 Seed data is `supabase/seed.sql` (idempotent — `on conflict (slug) do update`):
 41 qualified teams with initial Elo approximated from eloratings.net.
@@ -48,7 +51,10 @@ creates any team the seed didn't know (with `elo = 1600`).
 | `home_id`, `away_id` → teams | NULL while a knockout slot is undetermined |
 | `host_home` | true when USA/Canada/Mexico are the home side → +100 Elo home advantage |
 | `status` | `scheduled` \| `live` \| `finished` (free-tier scores are delayed; fine for the model) |
-| `home_goals`, `away_goals` | |
+| `home_goals`, `away_goals` | football-data `fullTime` — **includes extra time**; check `duration` before treating it as the 90' score |
+| `duration` | `REGULAR` \| `EXTRA_TIME` \| `PENALTY_SHOOTOUT` — settlement settles 90' markets only |
+| `winner_id` → teams | decided winner (covers pens, where goals stay level); used by the simulation |
+| `ht_home_goals`, `ht_away_goals` | half-time score — settles the 1H markets |
 | `elo_applied`, `elo_xg_applied` | per-pipeline bookkeeping: each result folds into each rating exactly once |
 
 ### match_predictions
@@ -67,9 +73,9 @@ unique key, which is what the worker upserts against.
 | `computed_at` | **set explicitly by the worker on every upsert** — column defaults only fire on insert |
 
 ### tournament_odds
-Per (pipeline, team, model_version): `advance_grp`, `reach_qf`, `reach_sf`,
-`reach_final`, `champion`, `n_sims`, `computed_at`. Blends do not simulate —
-only `free` and `statsapi` rows exist.
+Per (pipeline, team, model_version): `advance_grp`, `reach_r16`, `reach_qf`,
+`reach_sf`, `reach_final`, `champion`, `n_sims`, `computed_at`. Blends do not
+simulate — only `free` and `statsapi` rows exist.
 
 ### odds_snapshots
 Append-only history of every The Odds API pull: (fixture, bookmaker, market

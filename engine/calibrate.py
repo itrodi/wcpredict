@@ -82,6 +82,28 @@ def _history(comp_id: str, years: tuple[str, ...]) -> list[dict]:
     return out
 
 
+def fit_elo_goal_beta() -> float:
+    """Fit the Elo->goals slope so the Poisson-implied match expectancy tracks
+    the Elo win expectancy across the whole rating-gap range.
+
+    The Elo expectancy curve is itself calibrated on a century of results; an
+    arbitrary beta (the old hardcoded 0.002 understated favourites by several
+    points at moderate gaps) systematically manufactures fake 'value' on
+    underdogs in every market the engine prices."""
+    drs = np.arange(0, 625, 25)
+    best_beta, best_err = 0.002, np.inf
+    for beta in np.arange(0.0005, 0.00505, 0.00005):
+        err = 0.0
+        for dr in drs:
+            m = scoreline_matrix(*elo_lambdas(1600 + dr, 1600.0, False, float(beta)))
+            implied = float(np.tril(m, -1).sum()) + 0.5 * float(np.trace(m))
+            we = 1.0 / (1.0 + 10 ** (-dr / 400.0))
+            err += (implied - we) ** 2
+        if err < best_err:
+            best_err, best_beta = err, float(beta)
+    return round(best_beta, 5)
+
+
 def fit_dc_rho(hist: list[dict]) -> float:
     """Grid-search MLE for the DC low-score correction on historical scorelines,
     using each match's empirical goal means as lambda (coarse but stable)."""
@@ -135,13 +157,17 @@ def fit_corners_nb(hist: list[dict]) -> tuple[float, float] | None:
     return round(a, 2), round(max(2.0, k), 2)
 
 
-def backtest_2022(hist: list[dict]) -> dict[str, dict[str, float]]:
+def backtest_2022(hist: list[dict], rho_oos: float) -> dict[str, dict[str, float]]:
     """Brier/log-loss of both market models on WC 2022 results.
 
     Without point-in-time Elo per 2022 match we evaluate the SHAPE parameters:
     Pipeline A = plain Poisson, B = Dixon-Coles, both at per-tournament mean
     lambdas. This isolates the DC correction's value; the Elo input is shared
     machinery and identical in both pipelines.
+
+    `rho_oos` must be fitted WITHOUT 2022 data (the gate was previously scored
+    in-sample: rho fitted on 2018+2022, then 'tested' on 2022). The mean
+    lambdas remain in-sample by construction — noted in the report.
     """
     sample = [m for m in hist if m["year"] == "2022"]
     if not sample:
@@ -150,7 +176,7 @@ def backtest_2022(hist: list[dict]) -> dict[str, dict[str, float]]:
     lam_a = max(0.3, float(np.mean([m["ag"] for m in sample])))
     mat_a = scoreline_matrix(lam_h, lam_a)
     pa = {sel: p for mk, sel, p in markets_from_matrix(mat_a) if mk == "1x2"}
-    mat_b = dc_scoreline_matrix(lam_h, lam_a, config.MODEL_PARAMS["DC_RHO"])
+    mat_b = dc_scoreline_matrix(lam_h, lam_a, rho_oos)
     h, d, a = _1x2(mat_b)
     pb = {"home": h, "draw": d, "away": a}
 
@@ -177,6 +203,7 @@ def main():
         return
 
     fitted = {}
+    fitted["ELO_GOAL_BETA"] = fit_elo_goal_beta()
     fitted["DC_RHO"] = fit_dc_rho(hist)
     if (share := fit_fh_share(hist)) is not None:
         fitted["FH_GOAL_SHARE"] = share
@@ -189,7 +216,11 @@ def main():
     for k, v in fitted.items():
         print(f"  {k}={v}")
 
-    scores = backtest_2022(hist)
+    # the acceptance gate must be scored OUT-OF-SAMPLE: rho for the backtest is
+    # fitted on pre-2022 history only (production DC_RHO above uses everything)
+    hist_pre2022 = [m for m in hist if m["year"] != "2022"]
+    rho_oos = fit_dc_rho(hist_pre2022) if hist_pre2022 else config.MODEL_PARAMS["DC_RHO"]
+    scores = backtest_2022(hist, rho_oos)
     gate = bool(scores) and scores["statsapi"]["log_loss"] < scores["free"]["log_loss"]
 
     lines = [
@@ -205,9 +236,11 @@ def main():
             for name, s in scores.items()
         ),
         f"\n**Acceptance gate (B beats A on 1X2 log-loss): {'PASS — statsapi may become site default' if gate else 'FAIL — keep free/blend_free as default'}**",
+        f"\nGate rho fitted on pre-2022 history only (out-of-sample): rho = {rho_oos}",
         "\nNote: this backtest isolates the scoreline-shape parameters (plain Poisson vs"
         " Dixon-Coles at tournament-mean rates); point-in-time Elo inputs are shared"
-        " machinery. In-tournament `model_scores` is the live, like-for-like scoreboard.",
+        " machinery and the per-tournament mean lambdas remain in-sample by"
+        " construction. In-tournament `model_scores` is the live, like-for-like scoreboard.",
     ]
     out = Path(__file__).resolve().parent.parent / "docs" / "backtest-2022.md"
     out.parent.mkdir(exist_ok=True)
