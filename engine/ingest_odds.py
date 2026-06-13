@@ -22,17 +22,62 @@ def _resolve_slug(name: str, known_slugs: list[str]) -> str | None:
     return close[0] if close else None
 
 
+def _pull_gate(fixtures, now_dt) -> str | None:
+    """Reason to skip this pull, or None to proceed. The cron is hourly but
+    credits are finite (~500/month free tier vs ~720 hourly pulls over the
+    tournament): pull on a kickoff-aware cadence — dense near kickoffs (that's
+    where the closing line and the edges live), sparse otherwise."""
+    upcoming = [
+        datetime.fromisoformat(f["kickoff"].replace("Z", "+00:00"))
+        for f in fixtures
+        if datetime.fromisoformat(f["kickoff"].replace("Z", "+00:00")) > now_dt
+    ]
+    if not upcoming:
+        return "no upcoming fixtures"
+    nearest = min(upcoming) - now_dt
+    if nearest > timedelta(hours=config.ODDS_PULL_WINDOW_H):
+        return f"nearest kickoff {nearest} away (> {config.ODDS_PULL_WINDOW_H}h window)"
+    last = cache.get("odds:last_pull")
+    if last is None:
+        return None
+    since = now_dt - datetime.fromisoformat(last)
+    if nearest <= timedelta(hours=2):
+        required = timedelta(minutes=config.ODDS_PULL_SPACING_NEAR_M)
+    elif nearest <= timedelta(hours=12):
+        required = timedelta(minutes=config.ODDS_PULL_SPACING_MID_M)
+    else:
+        required = timedelta(minutes=config.ODDS_PULL_SPACING_FAR_M)
+    if since < required:
+        return f"last pull {since} ago (< {required} for kickoff in {nearest})"
+    return None
+
+
 def run():
     remaining = cache.get("odds:remaining")
     if remaining is not None and int(remaining) < config.ODDS_CREDIT_RESERVE:
         print(f"[ingest_odds] skipping: only {remaining} credits left (< reserve {config.ODDS_CREDIT_RESERVE})")
         return
 
+    now_dt = datetime.now(timezone.utc)
+    fixtures = (
+        sb()
+        .table("fixtures")
+        .select("id, home_id, away_id, kickoff")
+        .eq("status", "scheduled")
+        .execute()
+        .data
+    )
+    skip = _pull_gate(fixtures, now_dt)
+    if skip:
+        print(f"[ingest_odds] skipping pull: {skip}")
+        ops.set_status("odds_pull", {"skipped": skip, "at": now_dt.isoformat()})
+        return
+
     r = requests.get(
         f"https://api.the-odds-api.com/v4/sports/{config.ODDS_SPORT_KEY}/odds",
         params={
             "regions": config.ODDS_REGION,
-            "markets": "h2h",
+            "markets": config.ODDS_MARKETS,
             "oddsFormat": "decimal",
             "apiKey": config.ODDS_API_KEY,
         },
@@ -51,20 +96,11 @@ def run():
     slug_to_id = {t["slug"]: t["id"] for t in teams}
     known_slugs = list(slug_to_id)
 
-    fixtures = (
-        sb()
-        .table("fixtures")
-        .select("id, home_id, away_id, kickoff")
-        .eq("status", "scheduled")
-        .execute()
-        .data
-    )
     by_pair = {}
     for f in fixtures:
         if f["home_id"] and f["away_id"]:
             by_pair.setdefault((f["home_id"], f["away_id"]), []).append(f)
 
-    now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
     snapshots = []
     for ev in events:
@@ -91,27 +127,46 @@ def run():
             continue
         for bm in ev.get("bookmakers", []):
             for mkt in bm.get("markets", []):
-                if mkt.get("key") != "h2h":
-                    continue
-                for out in mkt.get("outcomes", []):
-                    if out["name"] == ev["home_team"]:
-                        sel = "home"
-                    elif out["name"] == ev["away_team"]:
-                        sel = "away"
-                    else:
-                        sel = "draw"
-                    snapshots.append(
-                        {
-                            "fixture_id": fixture["id"],
-                            "bookmaker": bm["key"],
-                            "market": "h2h",
-                            "selection": sel,
-                            "decimal_odds": out["price"],
-                            "fetched_at": now,
-                        }
-                    )
+                if mkt.get("key") == "h2h":
+                    for out in mkt.get("outcomes", []):
+                        if out["name"] == ev["home_team"]:
+                            sel = "home"
+                        elif out["name"] == ev["away_team"]:
+                            sel = "away"
+                        else:
+                            sel = "draw"
+                        snapshots.append(
+                            {
+                                "fixture_id": fixture["id"],
+                                "bookmaker": bm["key"],
+                                "market": "h2h",
+                                "selection": sel,
+                                "decimal_odds": out["price"],
+                                "fetched_at": now,
+                            }
+                        )
+                elif mkt.get("key") == "totals":
+                    # only the 2.5 line — that's the market the models price
+                    for out in mkt.get("outcomes", []):
+                        if out.get("point") != 2.5:
+                            continue
+                        sel = str(out.get("name", "")).lower()
+                        if sel not in ("over", "under"):
+                            continue
+                        snapshots.append(
+                            {
+                                "fixture_id": fixture["id"],
+                                "bookmaker": bm["key"],
+                                "market": "ou25",
+                                "selection": sel,
+                                "decimal_odds": out["price"],
+                                "fetched_at": now,
+                            }
+                        )
     for i in range(0, len(snapshots), 500):
         sb().table("odds_snapshots").insert(snapshots[i : i + 500]).execute()
+    cache.set("odds:last_pull", now, ttl_seconds=86400 * 7)
+    ops.set_status("odds_pull", {"at": now, "rows": len(snapshots), "markets": config.ODDS_MARKETS})
     print(f"[ingest_odds] appended {len(snapshots)} snapshot rows")
 
     # coverage audit (spec v4.1 §1.1): every fixture kicking off in the next 7

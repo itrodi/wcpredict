@@ -11,6 +11,9 @@ Schema lives in `supabase/migrations/` and must be run in order:
 4. `0004_v42.sql` — v4.2, additive: `fixtures.duration`/`winner_id`/
    `ht_home_goals`/`ht_away_goals` (90-minute settlement + pens winners),
    `tournament_odds.reach_r16`, plus a one-off dedupe of `prediction_log`.
+5. `0005_v43.sql` — v4.3, additive: `closing_odds` (CLV record), `picks.clv`/
+   `closing_odds`, `model_scores.beats_baseline` (quality gate), and
+   `fixture_incentives` (group-stage advancement leverage).
 
 Seed data is `supabase/seed.sql` (idempotent — `on conflict (slug) do update`):
 41 qualified teams with initial Elo approximated from eloratings.net.
@@ -91,9 +94,25 @@ closing price) for 1X2.
 
 ### model_scores
 The public scoreboard: per (pipeline, market) → `n` (distinct fixtures),
-`brier`, `log_loss`, `computed_at`. Recomputed from the full `prediction_log`
-on every run by `engine/compare.py`. Markets in the experimental set stay
-badged "experimental" in the UI until `n ≥ 30` here.
+`brier`, `log_loss`, `beats_baseline`, `computed_at`. Recomputed from the full
+`prediction_log` on every run by `engine/compare.py`. `beats_baseline` is true
+when the model's log-loss is at or below a constant base-rate predictor's on the
+same rows (NULL for the `market` pipeline). A market graduates from
+"experimental" only when `n ≥ 30` **and** `beats_baseline` — sample size alone
+no longer promotes a market into pick eligibility.
+
+### closing_odds (v4.3)
+The CLV record: per (fixture, market `1x2`/`ou25`, selection) → the de-vigged
+median `decimal_odds` + `devigged_p`, re-upserted every refresh while the
+fixture is `scheduled`. Once it leaves `scheduled` the row freezes, so the last
+write is the closing price — and unlike `odds_snapshots` it is never pruned.
+`write_db.settle_picks` reads it to stamp each pick's `clv`.
+
+### fixture_incentives (v4.3)
+Per unplayed group fixture (free pipeline sim): `P(advance | win/draw/loss)`
+for each side, conditioned on the same Monte Carlo runs, plus a `mutual_draw`
+flag. The picks engine suppresses dead rubbers (advancement barely moves with
+the result for both teams) and mutual-draw fixtures.
 
 ### match_stats (Pipeline B)
 Per (fixture, team, period `FT`/`1H`/`2H`): shots, shots_on_target, corners,
@@ -117,12 +136,13 @@ names, copy-paste-ready for aliases), `fixtures_missing_odds`,
 `odds_credits_remaining`, `statsapi_odds` (the §5.0 probe result),
 `last_refresh`. `/admin/health` reads this instead of recomputing.
 
-### picks (v4.1)
+### picks (v4.1, +v4.3)
 The public picks ledger: (fixture, market, selection, tier banker|value,
 probability, market_odds, edge, rationale jsonb bullets, published_at,
-retired_at, outcome). Immutable once published — material changes retire the
-old row and insert a new one. Settled by the worker; in Realtime so new picks
-appear live.
+retired_at, outcome, `closing_odds`, `clv`). Immutable once published — material
+changes retire the old row and insert a new one. **Every** published pick is
+settled, retired ones included (they were followable while live; excluding them
+would bias the record toward survivors), and stamped with CLV at settlement.
 
 ### shots (v4.1)
 Per-shot xG from shotmaps: (fixture, team, minute, xg, is_goal, situation,

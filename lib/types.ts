@@ -100,6 +100,8 @@ export type PickRow = {
   published_at: string;
   retired_at: string | null;
   outcome: boolean | null;
+  closing_odds: number | null; // last pre-kickoff de-vigged median, stamped at settlement
+  clv: number | null;          // market_odds/closing_odds − 1: positive = beat the close
   fixtures?: {
     id: number;
     kickoff: string;
@@ -138,6 +140,7 @@ export type ModelScore = {
   n: number;
   brier: number | null;
   log_loss: number | null;
+  beats_baseline: boolean | null; // beats a constant base-rate predictor on log-loss
   computed_at: string;
 };
 

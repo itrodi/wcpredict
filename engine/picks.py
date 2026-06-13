@@ -17,6 +17,14 @@ Tiers:
           and p >= 0.25. Scored by the true Kelly fraction
           f = (p*odds - 1) / (odds - 1).
 Caps: max 2 picks per fixture, max 10 live per tier.
+
+Leak plugs (v4.3) — fixtures the ratings are structurally blind to are
+suppressed entirely (existing picks retired with the reason):
+- a confirmed lineup showing >= 2 key absences (rotation: the market reprices
+  on the team sheet within minutes; an Elo model does not)
+- dead rubbers / mutual-draw fixtures, from fixture_incentives: where
+  P(advance | result) barely moves for both teams, or a draw is near-optimal
+  for both (classic matchday-3 incentive traps)
 """
 from datetime import datetime, timedelta, timezone
 
@@ -30,6 +38,9 @@ VALUE_EDGE_MIN, VALUE_P_MIN = 0.04, 0.25
 MAX_PER_FIXTURE, MAX_LIVE_PER_TIER = 2, 10
 # changes smaller than this keep the published pick (immutability with sanity)
 P_TOLERANCE, EDGE_TOLERANCE = 0.03, 0.02
+# leak plugs (v4.3)
+KEY_ABSENCE_LIMIT = 2     # confirmed XI missing >= this many top players -> suppress fixture
+LOW_LEVERAGE = 0.10       # max-min P(advance|result) below this for BOTH teams -> dead rubber
 
 
 def _now():
@@ -108,6 +119,38 @@ def _line_movement(fixture_ids: list[int]) -> dict:
     return out
 
 
+def _suppressed_fixtures(fixture_ids: list[int]) -> dict[int, str]:
+    """fixture_id -> reason for fixtures the picks engine must step aside from."""
+    out: dict[int, str] = {}
+    for i in range(0, len(fixture_ids), 100):
+        batch = fixture_ids[i : i + 100]
+        for lu in (
+            sb().table("lineups").select("fixture_id, key_absences")
+            .in_("fixture_id", batch).eq("confirmed", True).execute().data
+        ):
+            if len(lu.get("key_absences") or []) >= KEY_ABSENCE_LIMIT:
+                out[lu["fixture_id"]] = (
+                    f"confirmed lineup missing {len(lu['key_absences'])} key players"
+                )
+        for r in (
+            sb().table("fixture_incentives").select("*")
+            .in_("fixture_id", batch).execute().data
+        ):
+            h_vals = [r[f"home_adv_{k}"] for k in ("win", "draw", "loss") if r[f"home_adv_{k}"] is not None]
+            a_vals = [r[f"away_adv_{k}"] for k in ("win", "draw", "loss") if r[f"away_adv_{k}"] is not None]
+            h_vals = [float(v) for v in h_vals]
+            a_vals = [float(v) for v in a_vals]
+            if (
+                len(h_vals) >= 2 and len(a_vals) >= 2
+                and max(h_vals) - min(h_vals) < LOW_LEVERAGE
+                and max(a_vals) - min(a_vals) < LOW_LEVERAGE
+            ):
+                out[r["fixture_id"]] = "low-stakes fixture: advancement barely depends on the result"
+            elif r["mutual_draw"]:
+                out[r["fixture_id"]] = "a draw likely suits both teams"
+    return out
+
+
 def run():
     blend_pipe, model_pipe = _site_pipelines()
     now = _now()
@@ -123,11 +166,15 @@ def run():
         print("[picks] no fixtures in horizon")
         return
 
+    # calibrated = enough sample AND beats the base-rate predictor (quality
+    # gate, v4.3) — sample size alone must not promote a bad market
     calibrated = set(ALWAYS_CALIBRATED) | {
         s["market"]
         for s in sb().table("model_scores").select("market, n")
-        .gte("n", config.EXPERIMENTAL_MIN_N).execute().data
+        .gte("n", config.EXPERIMENTAL_MIN_N).eq("beats_baseline", True).execute().data
     }
+
+    suppressed = _suppressed_fixtures(list(fx))
 
     preds = fetch_all(
         lambda: sb().table("match_predictions").select("*")
@@ -144,11 +191,15 @@ def run():
 
     candidates, banker_keys = [], set()
     for r in banker_rows:
+        if r["fixture_id"] in suppressed:
+            continue
         p, edge = float(r["probability"]), float(r["edge"])
         if p >= BANKER_P and edge >= BANKER_EDGE_MIN:
             candidates.append({**r, "tier": "banker", "score": p})
             banker_keys.add((r["fixture_id"], r["market"], r["selection"]))
     for r in value_rows:
+        if r["fixture_id"] in suppressed:
+            continue
         key = (r["fixture_id"], r["market"], r["selection"])
         if key in banker_keys:
             continue
@@ -220,13 +271,15 @@ def run():
 
     for key, old in live_by_key.items():
         if key not in chosen_keys and old["fixture_id"] in fx:
+            reason = suppressed.get(old["fixture_id"], "no longer qualifies")
             sb().table("picks").update({
                 "retired_at": now_iso,
-                "rationale": (old.get("rationale") or []) + ["[retired: no longer qualifies]"],
+                "rationale": (old.get("rationale") or []) + [f"[retired: {reason}]"],
             }).eq("id", old["id"]).execute()
             retired += 1
 
     print(f"[picks] published={published} kept={kept} retired={retired} "
+          f"suppressed_fixtures={len(suppressed)} "
           f"(bankers={per_tier['banker']}, value={per_tier['value']})")
 
 

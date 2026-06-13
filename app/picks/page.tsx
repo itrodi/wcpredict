@@ -10,29 +10,52 @@ export const revalidate = 300;
 const PICK_SELECT =
   "*, fixtures(id, kickoff, status, home:teams!fixtures_home_id_fkey(name), away:teams!fixtures_away_id_fkey(name))";
 
-type TierRecord = { n: number; wins: number; hitRate: number | null; pl: number };
+type TierRecord = {
+  n: number;
+  wins: number;
+  hitRate: number | null;
+  pl: number;
+  roi: number | null;     // pl / picks with a price, flat 1u stakes
+  avgOdds: number | null;
+  clv: number | null;     // mean CLV over picks with a recorded closing price
+};
 
-/** Track record from settled, non-retired picks: hit rate per tier and P/L at
- * flat 1-unit stakes vs market_odds. Wins AND losses — this block is the
- * feature's credibility (spec v4.1 §4.3). */
-function trackRecord(settled: PickRow[]): Record<"banker" | "value", TierRecord> {
-  const out: Record<"banker" | "value", TierRecord> = {
-    banker: { n: 0, wins: 0, hitRate: null, pl: 0 },
-    value: { n: 0, wins: 0, hitRate: null, pl: 0 },
-  };
+const emptyRecord = (): TierRecord => ({
+  n: 0, wins: 0, hitRate: null, pl: 0, roi: null, avgOdds: null, clv: null,
+});
+
+/** Track record from EVERY settled pick — retired ones settle too (they were
+ * followable while live; dropping them would select losers out of the record).
+ * Hit rate, flat-1u P/L, ROI, average odds and CLV per bucket. Wins AND
+ * losses — this block is the feature's credibility (spec v4.1 §4.3). */
+function trackRecord(settled: PickRow[]): Record<"banker" | "value" | "retired", TierRecord> {
+  const out = { banker: emptyRecord(), value: emptyRecord(), retired: emptyRecord() };
+  const staked = { banker: 0, value: 0, retired: 0 };
+  const oddsSum = { banker: 0, value: 0, retired: 0 };
+  const clvSum = { banker: 0, value: 0, retired: 0 };
+  const clvN = { banker: 0, value: 0, retired: 0 };
   for (const p of settled) {
-    const t = out[p.tier];
+    const bucket = p.retired_at ? "retired" : p.tier;
+    const t = out[bucket];
     if (!t) continue;
     t.n++;
-    if (p.outcome) {
-      t.wins++;
-      if (p.market_odds) t.pl += Number(p.market_odds) - 1;
-    } else if (p.market_odds) {
-      t.pl -= 1;
+    if (p.outcome) t.wins++;
+    if (p.market_odds) {
+      staked[bucket]++;
+      oddsSum[bucket] += Number(p.market_odds);
+      t.pl += p.outcome ? Number(p.market_odds) - 1 : -1;
+    }
+    if (p.clv != null) {
+      clvSum[bucket] += Number(p.clv);
+      clvN[bucket]++;
     }
   }
-  for (const t of Object.values(out)) {
+  for (const bucket of ["banker", "value", "retired"] as const) {
+    const t = out[bucket];
     t.hitRate = t.n > 0 ? t.wins / t.n : null;
+    t.roi = staked[bucket] > 0 ? t.pl / staked[bucket] : null;
+    t.avgOdds = staked[bucket] > 0 ? oddsSum[bucket] / staked[bucket] : null;
+    t.clv = clvN[bucket] > 0 ? clvSum[bucket] / clvN[bucket] : null;
     t.pl = Math.round(t.pl * 100) / 100;
   }
   return out;
@@ -54,9 +77,8 @@ export default async function PicksPage() {
       sb
         .from("picks")
         .select("*")
-        .not("outcome", "is", null)
-        .is("retired_at", null),
-      sb.from("model_scores").select("*").gte("n", EXPERIMENTAL_MIN_N),
+        .not("outcome", "is", null),
+      sb.from("model_scores").select("*").gte("n", EXPERIMENTAL_MIN_N).eq("beats_baseline", true),
     ]);
     live = (l as unknown as PickRow[] | null) ?? [];
     settled = (s as PickRow[] | null) ?? [];
@@ -85,36 +107,58 @@ export default async function PicksPage() {
           {settled.length === 0 ? (
             <p className="text-xs text-zinc-600">No settled picks yet.</p>
           ) : (
-            <table className="text-xs">
-              <thead>
-                <tr className="text-zinc-500">
-                  <th className="pr-4 text-left font-medium">Tier</th>
-                  <th className="pr-4 text-right font-medium">W–L</th>
-                  <th className="pr-4 text-right font-medium">Hit rate</th>
-                  <th className="text-right font-medium">P/L (1u flat)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(["banker", "value"] as const).map((tier) => {
-                  const r = record[tier];
-                  return (
-                    <tr key={tier} className="text-zinc-200">
-                      <td className="pr-4 capitalize">{tier}</td>
-                      <td className="pr-4 text-right font-mono">
-                        {r.wins}–{r.n - r.wins}
-                      </td>
-                      <td className="pr-4 text-right font-mono">
-                        {r.hitRate != null ? `${Math.round(r.hitRate * 100)}%` : "–"}
-                      </td>
-                      <td className={`text-right font-mono font-semibold ${r.pl >= 0 ? "text-accent" : "text-red-400"}`}>
-                        {r.pl >= 0 ? "+" : ""}
-                        {r.pl.toFixed(2)}u
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <>
+              <table className="text-xs">
+                <thead>
+                  <tr className="text-zinc-500">
+                    <th className="pr-3 text-left font-medium">Tier</th>
+                    <th className="pr-3 text-right font-medium">W–L</th>
+                    <th className="pr-3 text-right font-medium">Hit</th>
+                    <th className="pr-3 text-right font-medium">Avg odds</th>
+                    <th className="pr-3 text-right font-medium">P/L (1u)</th>
+                    <th className="pr-3 text-right font-medium">ROI</th>
+                    <th className="text-right font-medium">CLV</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(["banker", "value", "retired"] as const).map((tier) => {
+                    const r = record[tier];
+                    if (tier === "retired" && r.n === 0) return null;
+                    return (
+                      <tr key={tier} className={tier === "retired" ? "text-zinc-500" : "text-zinc-200"}>
+                        <td className="pr-3 capitalize">{tier === "retired" ? "retired*" : tier}</td>
+                        <td className="pr-3 text-right font-mono">
+                          {r.wins}–{r.n - r.wins}
+                        </td>
+                        <td className="pr-3 text-right font-mono">
+                          {r.hitRate != null ? `${Math.round(r.hitRate * 100)}%` : "–"}
+                        </td>
+                        <td className="pr-3 text-right font-mono">
+                          {r.avgOdds != null ? r.avgOdds.toFixed(2) : "–"}
+                        </td>
+                        <td className={`pr-3 text-right font-mono font-semibold ${r.pl >= 0 ? "text-accent" : "text-red-400"}`}>
+                          {r.pl >= 0 ? "+" : ""}
+                          {r.pl.toFixed(2)}u
+                        </td>
+                        <td className={`pr-3 text-right font-mono ${r.roi != null && r.roi >= 0 ? "text-accent" : "text-zinc-400"}`}>
+                          {r.roi != null ? `${r.roi >= 0 ? "+" : ""}${(r.roi * 100).toFixed(1)}%` : "–"}
+                        </td>
+                        <td className={`text-right font-mono ${r.clv != null && r.clv >= 0 ? "text-accent" : "text-zinc-400"}`}>
+                          {r.clv != null ? `${r.clv >= 0 ? "+" : ""}${(r.clv * 100).toFixed(1)}%` : "–"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <p className="mt-2 max-w-xs text-[10px] leading-relaxed text-zinc-600">
+                CLV = published price vs the closing price; consistently positive CLV is the real
+                evidence of edge, win/loss is mostly noise at this sample size.
+                {record.banker.n + record.value.n < 50 &&
+                  " Small sample — treat every number here as provisional."}
+                {record.retired.n > 0 && " *Retired = withdrawn before kickoff but settled anyway."}
+              </p>
+            </>
           )}
         </div>
       </div>
