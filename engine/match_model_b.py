@@ -12,7 +12,7 @@ import numpy as np
 
 from . import config
 from .db import sb
-from .match_model import _latest_devigged_h2h, elo_lambdas
+from .match_model import _latest_devigged, _latest_devigged_h2h, elo_lambdas, power_devig
 
 P = config.MODEL_PARAMS
 
@@ -158,9 +158,8 @@ def _latest_corners_odds(fixture_ids: list[int]) -> dict:
             if set(sels) != {"over", "under"}:
                 continue
             med = {sel: float(np.median(v)) for sel, v in sels.items()}
-            implied = {sel: 1.0 / o for sel, o in med.items()}
-            over = sum(implied.values())
-            out[key] = {sel: (med[sel], implied[sel] / over) for sel in med}
+            devigged = power_devig({sel: 1.0 / o for sel, o in med.items()})
+            out[key] = {sel: (med[sel], devigged[sel]) for sel in med}
     return out
 
 
@@ -175,8 +174,10 @@ def run() -> list[dict]:
         .data
     )
     fixtures = [f for f in fixtures if f["home_id"] and f["away_id"]]
-    book = _latest_devigged_h2h([f["id"] for f in fixtures])
-    corners_book = _latest_corners_odds([f["id"] for f in fixtures])
+    fids = [f["id"] for f in fixtures]
+    book = _latest_devigged_h2h(fids)
+    book_ou = _latest_devigged(fids, "ou25", {"over", "under"})
+    corners_book = _latest_corners_odds(fids)
 
     rows = []
     for f in fixtures:
@@ -198,6 +199,10 @@ def run() -> list[dict]:
             }
             if market == "1x2" and f["id"] in book:
                 med_odds, devig_p = book[f["id"]][selection]
+                row["market_odds"] = round(med_odds, 3)
+                row["edge"] = round(p - devig_p, 4)
+            elif market == "ou25" and f["id"] in book_ou:
+                med_odds, devig_p = book_ou[f["id"]][selection]
                 row["market_odds"] = round(med_odds, 3)
                 row["edge"] = round(p - devig_p, 4)
             elif (f["id"], market) in corners_book and selection in corners_book[(f["id"], market)]:

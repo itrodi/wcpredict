@@ -66,6 +66,7 @@ export default async function ModelsPage() {
                     <th className="px-3 py-2.5 text-right">Brier</th>
                     <th className="px-3 py-2.5 text-right">Log-loss</th>
                     <th className="px-3 py-2.5 text-right">Δ log-loss vs market</th>
+                    <th className="px-3 py-2.5 text-center">Skill</th>
                     <th className="px-3 py-2.5 text-right">Settled picks</th>
                   </tr>
                 </thead>
@@ -103,6 +104,15 @@ export default async function ModelsPage() {
                         >
                           {delta != null ? `${delta > 0 ? "+" : ""}${delta.toFixed(4)}` : "–"}
                         </td>
+                        <td className="px-3 py-2 text-center font-mono">
+                          {p === "market" || s.beats_baseline == null ? (
+                            <span className="text-zinc-600">–</span>
+                          ) : s.beats_baseline ? (
+                            <span className="text-accent" title="beats a constant base-rate predictor">✓</span>
+                          ) : (
+                            <span className="text-red-400" title="worse than base rate — stays experimental">✗</span>
+                          )}
+                        </td>
                         <td className="px-3 py-2 text-right font-mono text-zinc-400">
                           {p === "statsapi" && picks.length > 0
                             ? `${pickWins}–${picks.length - pickWins}`
@@ -118,7 +128,8 @@ export default async function ModelsPage() {
         })
       )}
       <p className="text-xs text-zinc-600">
-        Markets with fewer than 30 scored matches are still labelled experimental across the site.
+        A market graduates from experimental only with ≥30 scored matches AND a ✓ in Skill (the
+        model beats a constant base-rate predictor on log-loss) — sample size alone is not enough.
       </p>
     </div>
   );

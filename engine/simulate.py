@@ -15,6 +15,7 @@ the engine switches to the real published pairings as soon as football-data
 knows the teams). Matches decided after 90' use the stored result; pens-decided
 matches use fixtures.winner_id instead of an Elo coin flip.
 """
+from datetime import datetime, timezone
 from functools import lru_cache
 
 import numpy as np
@@ -81,13 +82,23 @@ def _load():
     fixtures = (
         sb()
         .table("fixtures")
-        .select("stage, group_code, home_id, away_id, status, home_goals, away_goals, "
+        .select("id, stage, group_code, home_id, away_id, status, home_goals, away_goals, "
                 "host_home, winner_id")
         .neq("stage", "3P")
         .execute()
         .data
     )
     return teams, fixtures
+
+
+def conditional_advancement(adv: np.ndarray, hg: np.ndarray, ag: np.ndarray, min_n: int = 200):
+    """(P(adv|win), P(adv|draw), P(adv|loss)) from the first team's perspective,
+    None for results that occurred in fewer than min_n sims."""
+    out = []
+    for mask in (hg > ag, hg == ag, hg < ag):
+        n = int(mask.sum())
+        out.append(round(float(adv[mask].mean()), 4) if n >= min_n else None)
+    return tuple(out)
 
 
 def run(n_sims: int = config.N_SIMS, pipeline: str = config.PIPELINE_FREE):
@@ -130,7 +141,8 @@ def run(n_sims: int = config.N_SIMS, pipeline: str = config.PIPELINE_FREE):
             continue
         if f["stage"] == "group" and f["group_code"] in group_fx:
             group_fx[f["group_code"]].append(
-                (h, a, f["status"] == "finished", f["home_goals"], f["away_goals"], bool(f["host_home"]))
+                (h, a, f["status"] == "finished", f["home_goals"], f["away_goals"],
+                 bool(f["host_home"]), f["id"])
             )
         elif f["stage"] in ko_fx:
             # 90'-decided winner from goals; pens/ET winner from winner_id
@@ -157,6 +169,7 @@ def run(n_sims: int = config.N_SIMS, pipeline: str = config.PIPELINE_FREE):
     # ---- group stage ----
     winners, runners, thirds = [], [], []
     third_keys = []
+    sampled_group = []  # (fixture_id, h, a, hg, ag) for unplayed real fixtures — feeds incentives
     for g in group_letters:
         T = np.array(groups[g])
         local = {t: i for i, t in enumerate(T)}
@@ -164,11 +177,14 @@ def run(n_sims: int = config.N_SIMS, pipeline: str = config.PIPELINE_FREE):
         gf = np.zeros((n_sims, 4))
         ga = np.zeros((n_sims, 4))
         matches = group_fx[g] or [
-            (int(T[i]), int(T[j]), False, None, None, False) for i in range(4) for j in range(i + 1, 4)
+            (int(T[i]), int(T[j]), False, None, None, False, None)
+            for i in range(4) for j in range(i + 1, 4)
         ]
-        for h, a, finished, hg_v, ag_v, host_home in matches:
+        for h, a, finished, hg_v, ag_v, host_home, fid in matches:
             i, j = local[h], local[a]
             hg, ag = match_goals(h, a, finished, hg_v, ag_v, host_home)
+            if not finished and fid is not None:
+                sampled_group.append((fid, h, a, hg, ag))
             pts[:, i] += 3 * (hg > ag) + (hg == ag)
             pts[:, j] += 3 * (ag > hg) + (hg == ag)
             gf[:, i] += hg
@@ -195,6 +211,34 @@ def run(n_sims: int = config.N_SIMS, pipeline: str = config.PIPELINE_FREE):
     np.put_along_axis(qual, third_order, True, axis=1)
     thirds_q = np.take_along_axis(thirds, third_order, axis=1)  # (n_sims, 8)
     qualifiers = np.concatenate([winners, runners, thirds_q], axis=1)  # (n_sims, 32)
+
+    # ---- group-stage incentives (free pipeline only): P(advance | result) ----
+    # Conditioning the SAME sims on the sampled result costs nothing extra and
+    # exposes dead rubbers / mutual-draw fixtures, which the ratings are blind
+    # to — the picks engine steps aside from those.
+    if pipeline == config.PIPELINE_FREE and sampled_group:
+        adv_mask = np.zeros((n_sims, nt), dtype=bool)
+        adv_mask[np.arange(n_sims)[:, None], qualifiers] = True
+        inc_rows = []
+        for fid, h, a, hg, ag in sampled_group:
+            hw, hd, hl = conditional_advancement(adv_mask[:, h], hg, ag)
+            aw, ad, al = conditional_advancement(adv_mask[:, a], ag, hg)
+            h_vals = [v for v in (hw, hd, hl) if v is not None]
+            a_vals = [v for v in (aw, ad, al) if v is not None]
+            mutual_draw = bool(
+                hd is not None and ad is not None and h_vals and a_vals
+                and hd >= max(h_vals) - 0.02 and ad >= max(a_vals) - 0.02
+            )
+            inc_rows.append({
+                "fixture_id": fid,
+                "home_adv_win": hw, "home_adv_draw": hd, "home_adv_loss": hl,
+                "away_adv_win": aw, "away_adv_draw": ad, "away_adv_loss": al,
+                "mutual_draw": mutual_draw,
+                "n_sims": n_sims,
+                "computed_at": datetime.now(timezone.utc).isoformat(),
+            })
+        sb().table("fixture_incentives").upsert(inc_rows, on_conflict="fixture_id").execute()
+        print(f"[simulate] incentives recorded for {len(inc_rows)} unplayed group fixtures")
 
     # ---- knockout bracket (official match-number progression) ----
     # place qualified thirds into their slots, per combination scenario
@@ -239,11 +283,27 @@ def run(n_sims: int = config.N_SIMS, pipeline: str = config.PIPELINE_FREE):
                 for m, fx in resolved.items()
             }
 
+    # knockout advancement decomposed on the goals model: the raw Elo
+    # expectancy W_e credits half a draw as half a win, overrating favourites
+    # who actually face near-coin pens after a 90' draw. Tabulate P(win 90')
+    # and P(draw 90') over the Elo-gap range once, interpolate per match.
+    ko_drs = np.arange(-800.0, 801.0, 20.0)
+    ko_pw, ko_pd = [], []
+    for dr in ko_drs:
+        mat = dc_scoreline_matrix(*elo_lambdas(1600.0 + dr, 1600.0, False), dc_rho)
+        ko_pw.append(float(np.tril(mat, -1).sum()))
+        ko_pd.append(float(np.trace(mat)))
+    ko_pw, ko_pd = np.array(ko_pw), np.array(ko_pd)
+    et_shrink = config.MODEL_PARAMS["KO_ET_SHRINK"]
+
     def play(h, a, stage, host_home=False):
-        """Winner per sim: Elo-weighted coin (pens ~ coin), overridden by real
-        decided results wherever the simulated pairing matches a real fixture."""
+        """Winner per sim: P(win 90') + P(draw 90')·p_ET-and-pens, overridden by
+        real decided results wherever the simulated pairing matches a real fixture."""
         adv = config.ELO_HOME_ADV if host_home else 0
-        p = 1.0 / (1.0 + 10 ** (-(E[h] - E[a] + adv) / 400.0))
+        dr = E[h] - E[a] + adv
+        we = 1.0 / (1.0 + 10 ** (-dr / 400.0))
+        p_et = 0.5 + (we - 0.5) * et_shrink
+        p = np.interp(dr, ko_drs, ko_pw) + np.interp(dr, ko_drs, ko_pd) * p_et
         w = np.where(rng.random(n_sims) < p, h, a)
         for fx in ko_fx.get(stage, []):
             if fx["winner"] is None:

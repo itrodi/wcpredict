@@ -63,6 +63,11 @@ MODEL_PARAMS = {
     "CORNERS_K": _f("CORNERS_K", 9.0),
     # blend.py: p = w*p_market + (1-w)*p_model
     "BLEND_W_MARKET": _f("BLEND_W_MARKET", 0.7),
+    # simulate.py knockouts: P(advance) = P(win 90') + P(draw 90') * p_et where
+    # p_et = 0.5 + (W_e - 0.5)*shrink — ET is ~1/3 of a match and pens ~ a coin,
+    # so the favourite's edge shrinks after a 90' draw (raw W_e overrated
+    # favourites by ~3pts at a 200-Elo gap, compounding over five rounds)
+    "KO_ET_SHRINK": _f("KO_ET_SHRINK", 0.33),
     # first-half corners share (v4.1 §5.6): 0 = market disabled; set from
     # calibrate.py output only if the calibration is satisfactory
     "CORNERS_1H_SHARE": _f("CORNERS_1H_SHARE", 0.0),
@@ -74,8 +79,18 @@ EXPERIMENTAL_MIN_N = 30
 # The Odds API (shared market layer for BOTH pipelines — stats plan has no odds)
 ODDS_SPORT_KEY = "soccer_fifa_world_cup"
 ODDS_REGION = "eu"          # ONE region x ONE market = 1 credit per call (v3 spec §9b)
+# markets per pull: each market costs a credit per call. "h2h,totals" doubles
+# the spend but unlocks ou25 edges/value picks — only enable on a paid plan.
+ODDS_MARKETS = os.environ.get("ODDS_MARKETS", "h2h")
 ODDS_CREDIT_RESERVE = 60    # skip odds refresh when fewer credits remain
 ODDS_SNAPSHOT_RETENTION_DAYS = 14
+# kickoff-aware pull spacing (cron stays hourly; this gate is what spends
+# credits): hourly refresh all tournament = ~720 pulls vs the 500/month free
+# tier — the worker would have gone dark right when the knockouts start.
+ODDS_PULL_WINDOW_H = 48         # don't pull at all with no kickoff inside this
+ODDS_PULL_SPACING_NEAR_M = 55   # min minutes between pulls, kickoff <= 2h away
+ODDS_PULL_SPACING_MID_M = 175   # kickoff <= 12h away (~3h cadence)
+ODDS_PULL_SPACING_FAR_M = 355   # kickoff > 12h away (~6h cadence)
 
 # football-data.org (Pipeline A)
 FD_BASE = "https://api.football-data.org/v4"

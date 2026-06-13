@@ -66,11 +66,35 @@ def markets_from_matrix(m: np.ndarray) -> list[tuple[str, str, float]]:
     return rows
 
 
-def _latest_devigged_h2h(fixture_ids: list[int]) -> dict[int, dict[str, tuple[float, float]]]:
-    """fixture_id -> selection -> (median_decimal_odds, devigged_probability),
-    using only each fixture's most recent fetch batch.
+def power_devig(implied: dict[str, float]) -> dict[str, float]:
+    """De-vig by the power method: q_i = p_i^k with k solved so Σq = 1.
 
-    Small batches: ~20 books x 3 selections x 5 fixtures per pull keeps every
+    Proportional normalisation spreads the overround evenly, which puts too
+    much of it on favourites and manufactures phantom value on draws and
+    longshots — exactly the selections a value tier surfaces. The power method
+    allocates more of the vig to the longshots (the empirical
+    favourite-longshot bias)."""
+    lo, hi = 0.3, 8.0
+    for _ in range(60):
+        k = (lo + hi) / 2
+        s = sum(p**k for p in implied.values())
+        if s > 1.0:
+            lo = k
+        else:
+            hi = k
+    k = (lo + hi) / 2
+    q = {sel: p**k for sel, p in implied.items()}
+    total = sum(q.values())
+    return {sel: v / total for sel, v in q.items()}
+
+
+def _latest_devigged(
+    fixture_ids: list[int], market: str, selections: set[str]
+) -> dict[int, dict[str, tuple[float, float]]]:
+    """fixture_id -> selection -> (median_decimal_odds, devigged_probability),
+    using only each fixture's most recent fetch batch of the given market.
+
+    Small batches: ~20 books x selections x 5 fixtures per pull keeps every
     in-batch fixture's latest pull comfortably inside the 1000-row window (the
     old 50-fixture/2000-row version could silently drop fixtures)."""
     out: dict[int, dict[str, tuple[float, float]]] = {}
@@ -81,7 +105,7 @@ def _latest_devigged_h2h(fixture_ids: list[int]) -> dict[int, dict[str, tuple[fl
             .table("odds_snapshots")
             .select("fixture_id, selection, decimal_odds, fetched_at")
             .in_("fixture_id", batch)
-            .eq("market", "h2h")
+            .eq("market", market)
             .order("fetched_at", desc=True)
             .limit(1000)
             .execute()
@@ -95,13 +119,16 @@ def _latest_devigged_h2h(fixture_ids: list[int]) -> dict[int, dict[str, tuple[fl
             if s["fetched_at"] == latest_ts.get(s["fixture_id"]):
                 by_sel[s["fixture_id"]][s["selection"]].append(float(s["decimal_odds"]))
         for fid, sels in by_sel.items():
-            if set(sels) != {"home", "draw", "away"}:
+            if set(sels) != selections:
                 continue
             med = {sel: float(np.median(odds)) for sel, odds in sels.items()}
-            implied = {sel: 1.0 / o for sel, o in med.items()}
-            overround = sum(implied.values())
-            out[fid] = {sel: (med[sel], implied[sel] / overround) for sel in med}
+            devigged = power_devig({sel: 1.0 / o for sel, o in med.items()})
+            out[fid] = {sel: (med[sel], devigged[sel]) for sel in med}
     return out
+
+
+def _latest_devigged_h2h(fixture_ids: list[int]) -> dict[int, dict[str, tuple[float, float]]]:
+    return _latest_devigged(fixture_ids, "h2h", {"home", "draw", "away"})
 
 
 def run() -> list[dict]:
@@ -120,7 +147,9 @@ def run() -> list[dict]:
         .data
     )
     fixtures = [f for f in fixtures if f["home_id"] and f["away_id"]]
-    book = _latest_devigged_h2h([f["id"] for f in fixtures])
+    fids = [f["id"] for f in fixtures]
+    book = _latest_devigged_h2h(fids)
+    book_ou = _latest_devigged(fids, "ou25", {"over", "under"})  # present iff ODDS_MARKETS includes totals
 
     rows = []
     for f in fixtures:
@@ -142,8 +171,11 @@ def run() -> list[dict]:
                 "edge": None,
                 "model_version": config.MODEL_VERSION,
             }
-            if market == "1x2" and f["id"] in book:
-                med_odds, devig_p = book[f["id"]][selection]
+            priced = book.get(f["id"]) if market == "1x2" else (
+                book_ou.get(f["id"]) if market == "ou25" else None
+            )
+            if priced:
+                med_odds, devig_p = priced[selection]
                 row["market_odds"] = round(med_odds, 3)
                 row["edge"] = round(p - devig_p, 4)
             rows.append(row)

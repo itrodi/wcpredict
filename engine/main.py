@@ -46,6 +46,7 @@ def main():
     # ---- ingest ----
     _stage("ingest_fd", ingest_fd.run)                        # A: fixtures + results
     _stage("ingest_odds", ingest_odds.run)                    # shared: h2h odds for BOTH pipelines
+    _stage("closing_odds", write_db.record_closing_odds)      # CLV record: last write pre-kickoff = close
     if statsapi_enabled:
         _stage("ingest_statsapi", ingest_statsapi.run)        # B: xmap, match_stats, lineups
         _stage("ingest_statsapi_extra", ingest_statsapi_extra.run)  # B: odds probe, shotmaps, players

@@ -12,7 +12,6 @@ from .ingest_statsapi import _stat_rows
 from .statsapi import pick
 
 LIVE_STATES = {"live", "in_play", "ht", "paused"}
-FINISHED_STATES = {"finished", "ft", "full_time", "ended"}
 
 
 def run():
@@ -58,11 +57,14 @@ def run():
         patch = {}
         if state in LIVE_STATES:
             patch["status"] = "live"
-        elif state in FINISHED_STATES:
-            patch["status"] = "finished"
+        # NEVER set 'finished' here: this poller has no duration/winner/HT data,
+        # so a knockout that went to extra time would sit as a REGULAR 90'
+        # result until football-data catches up — and settlement, Elo and the
+        # prediction log would all consume it. football-data's ingest owns the
+        # finished transition (it writes duration/winner_id/HT atomically).
         hg = pick(score, "home", "home_goals", "fulltime_home")
         ag = pick(score, "away", "away_goals", "fulltime_away")
-        if hg is not None:
+        if hg is not None and state in LIVE_STATES:
             patch["home_goals"], patch["away_goals"] = hg, ag
         if patch:
             sb().table("fixtures").update(patch).eq("id", f["id"]).execute()

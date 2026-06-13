@@ -15,7 +15,7 @@ without code changes.
 | `cache.py` | shared | `api_cache`-backed HTTP cache (get/set with TTL) |
 | `aliases.py` | shared | `slugify()` + cross-vendor name alias dict |
 | `ingest_fd.py` | A | football-data.org `WC` matches → teams, fixtures, `xmap.fd_id` |
-| `ingest_odds.py` | shared | The Odds API bulk h2h → `odds_snapshots`; credit-aware; snapshot pruning |
+| `ingest_odds.py` | shared | The Odds API bulk h2h (+optional totals) → `odds_snapshots`; kickoff-aware credit budget; snapshot pruning |
 | `statsapi.py` | B | TheStatsAPI HTTP client: bearer auth, 0.5s spacing, defensive `pick()` field access |
 | `ingest_statsapi.py` | B | identity resolution → `xmap`, match_stats (xG/corners), lineups, payload pruning |
 | `ratings.py` | A | results-Elo on `teams.elo` (`fixtures.elo_applied`) |
@@ -44,14 +44,26 @@ without code changes.
   official 104 into `ops_status`; `main.py` ends each run with a Pipeline A
   coverage check. Unmapped vendor team names are recorded verbatim so adding an
   alias is copy-paste from `/admin/health`.
-- **Picks rules** (`picks.py`): calibrated markets only (`model_scores.n ≥ 30`;
-  1x2/ou25/btts exempt), Banker = p ≥ 0.65 ∧ edge ≥ −0.01 (1x2 bankers come from
-  the blend), Value = **model**-pipeline rows with edge ≥ 0.04 ∧ p ≥ 0.25 ∧
-  `p·odds > 1` (positive EV at the *quoted* price — an edge over the de-vigged
-  probability alone can still lose to the vig on favourites), ranked by the
-  true Kelly fraction `(p·odds − 1)/(odds − 1)`; ≤2/fixture, ≤10/tier. Material
-  changes retire-and-republish; `write_db.settle_picks` settles outcomes
-  (corners settle from `match_stats`, 1H markets from the stored HT score).
+- **Picks rules** (`picks.py`): calibrated markets only (`model_scores.n ≥ 30`
+  **and** `beats_baseline`; 1x2/ou25/btts exempt), Banker = p ≥ 0.65 ∧ edge ≥
+  −0.01 (1x2 bankers come from the blend), Value = **model**-pipeline rows with
+  edge ≥ 0.04 ∧ p ≥ 0.25 ∧ `p·odds > 1` (positive EV at the *quoted* price — an
+  edge over the de-vigged probability alone can still lose to the vig on
+  favourites), ranked by the true Kelly fraction `(p·odds − 1)/(odds − 1)`;
+  ≤2/fixture, ≤10/tier. Material changes retire-and-republish;
+  `write_db.settle_picks` settles **every** published pick incl. retired ones
+  (corners settle from `match_stats`, 1H markets from the stored HT score) and
+  stamps CLV from `closing_odds`.
+- **Leak plugs** (v4.3): the picks engine suppresses a fixture entirely when a
+  confirmed lineup shows ≥2 key absences for any side (rotation — the market
+  reprices on the team sheet, an Elo model does not), or `fixture_incentives`
+  marks it a dead rubber / mutual-draw situation (matchday-3 incentive traps the
+  ratings are blind to). Existing picks on a suppressed fixture are retired with
+  the reason.
+- **CLV** (`write_db.record_closing_odds`): every refresh re-records the
+  de-vigged median per still-`scheduled` fixture into `closing_odds`; the final
+  write is the closing price and survives snapshot pruning, so each pick gets a
+  closing-line-value stamp — the leading indicator of edge at WC sample sizes.
 - **Closing odds means closing**: odds ingest and both match models only touch
   `status='scheduled'` fixtures (and the odds ingest skips events whose
   commence time has passed), so the last stored prediction row — the one
@@ -87,8 +99,12 @@ fixtures — `python -m engine.tests` guards against that regressing.
 1X2, O/U 2.5, BTTS, correct score (0–4 each way + `other`).
 
 **Edge**: the latest fetch batch of `odds_snapshots` per fixture → median
-decimal odds per selection across bookmakers → implied probs normalised
-(de-vig) → `edge = p_model − p_market`. Stored on 1X2 rows only.
+decimal odds per selection across bookmakers → **power de-vig** (`q_i = p_i^k`
+with `k` solved so `Σq = 1`; proportional normalisation over-taxes favourites
+and manufactures phantom value on draws/longshots — the favourite-longshot
+bias) → `edge = p_model − p_market`. Stored on 1X2 always, and on `ou25` when
+`ODDS_MARKETS` includes `totals` (a paid-plan opt-in — `h2h,totals` doubles the
+credit spend per pull).
 
 ## Pipeline B model (`xgelo-dc-v1`)
 
@@ -152,12 +168,17 @@ Fully vectorised numpy, 20,000 runs per pipeline per refresh.
   The eight qualified thirds are placed by a constraint-respecting matching
   (memoised over the 495 scenarios; `engine/tests.py` verifies all of them).
   Once football-data publishes the real R32 — FIFA's own thirds placement —
-  the exact pairings are forced. Knockout winners are drawn from the no-draw
-  Elo expectancy; real decided results override wherever the simulated pairing
-  matches a real fixture, and pens winners come from `fixtures.winner_id`
-  rather than a coin flip.
+  the exact pairings are forced. Knockout advancement is decomposed as
+  `P(win 90') + P(draw 90')·p_ET` where `p_ET = 0.5 + (W_e − 0.5)·KO_ET_SHRINK`
+  — raw `W_e` credits half a draw as half a win, overrating favourites who
+  actually face near-coin pens after 90' level, compounding over five rounds.
+  Real decided results override wherever the simulated pairing matches a real
+  fixture, and pens winners come from `fixtures.winner_id` rather than a coin.
 - Outputs per team: `advance_grp`, `reach_r16`, `reach_qf`, `reach_sf`,
-  `reach_final`, `champion` (occurrence counts / n_sims).
+  `reach_final`, `champion` (occurrence counts / n_sims). The free pipeline also
+  writes `fixture_incentives`: `P(advance | win/draw/loss)` per side for each
+  unplayed group fixture, conditioned on the same runs (feeds the picks engine's
+  dead-rubber / mutual-draw suppression).
 
 ## Scoring (`compare.py` + `write_db.log_finished_predictions`)
 

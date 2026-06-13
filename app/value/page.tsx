@@ -42,7 +42,7 @@ export default async function ValuePage({
         .not("edge", "is", null)
         .neq("fixtures.status", "finished")
         .gte("fixtures.kickoff", new Date().toISOString()),
-      sb.from("model_scores").select("*").gte("n", EXPERIMENTAL_MIN_N),
+      sb.from("model_scores").select("*").gte("n", EXPERIMENTAL_MIN_N).eq("beats_baseline", true),
     ]);
     rows = ((data as unknown as ValueRow[] | null) ?? [])
       // view ownership: blend owns 1X2, the model pipeline owns the rest

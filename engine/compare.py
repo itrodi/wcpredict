@@ -57,6 +57,12 @@ def run():
         ys = [1.0 if i["outcome"] else 0.0 for i in items]
         brier = sum((p - y) ** 2 for p, y in zip(ps, ys)) / len(ps)
         log_loss = -sum(y * math.log(p) + (1 - y) * math.log(1 - p) for p, y in zip(ps, ys)) / len(ps)
+        # quality gate input: does the model beat a constant base-rate predictor
+        # on the same rows? Sample size alone must not graduate a market out of
+        # "experimental" — n>=30 with worse-than-climatology skill stays gated.
+        base_p = min(max(sum(ys) / len(ys), EPS), 1 - EPS)
+        ll_base = -sum(y * math.log(base_p) + (1 - y) * math.log(1 - base_p) for y in ys) / len(ys)
+        beats = None if pipeline == "market" else bool(log_loss <= ll_base)
         scores.append(
             {
                 "pipeline": pipeline,
@@ -64,6 +70,7 @@ def run():
                 "n": len({i["fixture_id"] for i in items}),
                 "brier": round(brier, 6),
                 "log_loss": round(log_loss, 6),
+                "beats_baseline": beats,
                 "computed_at": now,
             }
         )

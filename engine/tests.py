@@ -24,7 +24,7 @@ import numpy as np
 
 from . import config
 from .blend import run as blend_run
-from .match_model import elo_lambdas, markets_from_matrix, scoreline_matrix
+from .match_model import elo_lambdas, markets_from_matrix, power_devig, scoreline_matrix
 from .match_model_b import _1x2, dc_scoreline_matrix, markets_for_fixture, nb_pmf_vector
 from .ratings import _expected, _g_multiplier
 from .ratings_xg import xg_result
@@ -139,6 +139,23 @@ def main():
           f"p={out[0]['probability']}")
     check("blend edge vs market", abs(out[0]["edge"] - round(expected - 0.46, 4)) < 1e-9)
 
+    print("== De-vig (power method) ==")
+    # symmetric two-way book: power de-vig must split 50/50
+    sym = power_devig({"over": 1 / 1.91, "under": 1 / 1.91})
+    check("power devig normalises to 1", abs(sum(sym.values()) - 1) < 1e-9)
+    check("symmetric book devigs to 0.5", abs(sym["over"] - 0.5) < 1e-6)
+    # favourite-longshot: vs proportional, power shifts overround onto the longshot,
+    # so the favourite's fair prob is HIGHER and the longshot's LOWER
+    implied = {"home": 1 / 1.30, "draw": 1 / 5.5, "away": 1 / 11.0}
+    over = sum(implied.values())
+    prop = {k: v / over for k, v in implied.items()}
+    pw = power_devig(implied)
+    check("power devig sums to 1", abs(sum(pw.values()) - 1) < 1e-9)
+    check("favourite fair prob >= proportional", pw["home"] > prop["home"],
+          f"power={pw['home']:.3f} prop={prop['home']:.3f}")
+    check("longshot fair prob <= proportional", pw["away"] < prop["away"],
+          f"power={pw['away']:.3f} prop={prop['away']:.3f}")
+
     print("== Settlement ==")
     check("1x2 settle", settle_outcome("1x2", "home", 2, 1) is True
           and settle_outcome("1x2", "draw", 1, 1) is True)
@@ -167,10 +184,35 @@ def main():
           settle_outcome("htft", "draw_home", 2, 1, ht_hg=0, ht_ag=0) is True
           and settle_outcome("htft", "home_draw", 2, 1, ht_hg=1, ht_ag=0, duration="EXTRA_TIME") is True)
 
+    print("== Knockout advancement decomposition ==")
+    from . import simulate
+    # P(advance) = P(win 90') + P(draw 90')*p_et with p_et = 0.5 + (W_e-0.5)*shrink.
+    # The shrink reduces a favourite's advance prob versus crediting them the
+    # full win-prob on a 90' draw (the old raw-W_e coin), and is exact at parity.
+    shrink = config.MODEL_PARAMS["KO_ET_SHRINK"]
+    for dr in (0.0, 200.0, 500.0):
+        mat = dc_scoreline_matrix(*elo_lambdas(1600 + dr, 1600, False), config.MODEL_PARAMS["DC_RHO"])
+        pw, pd = float(np.tril(mat, -1).sum()), float(np.trace(mat))
+        we = 1.0 / (1.0 + 10 ** (-dr / 400.0))
+        p_et = 0.5 + (we - 0.5) * shrink
+        p_adv = pw + pd * p_et
+        p_adv_noshrink = pw + pd * we
+        check(f"ET shrink between 0.5 and We (dr={dr:.0f})", 0.5 - 1e-9 <= p_et <= we + 1e-9)
+        if dr == 0:
+            check("KO advance = 0.5 at parity", abs(p_adv - 0.5) < 1e-6)
+        else:
+            check(f"shrink lowers favourite advance (dr={dr:.0f})", p_adv < p_adv_noshrink,
+                  f"shrunk={p_adv:.3f} full-credit={p_adv_noshrink:.3f}")
+    # conditional_advancement: buckets a result-conditioned advance array
+    rng_t = np.random.default_rng(0)
+    hg_t = rng_t.poisson(1.6, 4000); ag_t = rng_t.poisson(1.0, 4000)
+    adv_t = (hg_t > ag_t).astype(float)  # advance iff won — so P(adv|win)=1, P(adv|loss)=0
+    w, d, l = simulate.conditional_advancement(adv_t, hg_t, ag_t)
+    check("conditional advance|win = 1", w is not None and abs(w - 1.0) < 1e-9)
+    check("conditional advance|loss = 0", l is not None and abs(l - 0.0) < 1e-9)
+
     print("== Official bracket (R32 slots + thirds allocation) ==")
     from itertools import combinations
-
-    from . import simulate
     slot_strings = [s for pair in simulate.R32_SLOTS.values() for s in pair]
     check("every group winner appears exactly once",
           sorted(s[1] for s in slot_strings if s.startswith("1")) == list("ABCDEFGHIJKL"))

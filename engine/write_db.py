@@ -90,11 +90,47 @@ def _corner_counts(fixture_ids: list[int]) -> dict[int, tuple]:
     return out
 
 
+def record_closing_odds():
+    """Upsert the current de-vigged medians for every still-scheduled fixture.
+
+    Runs every refresh; once a fixture leaves 'scheduled' its row stops
+    updating, so the last write IS the closing price. This is the CLV record —
+    it survives odds_snapshots pruning."""
+    from .match_model import _latest_devigged
+
+    fixtures = sb().table("fixtures").select("id").eq("status", "scheduled").execute().data
+    fids = [f["id"] for f in fixtures]
+    if not fids:
+        return
+    now = _now()
+    rows = []
+    for src_market, market, sels in (
+        ("h2h", "1x2", {"home", "draw", "away"}),
+        ("ou25", "ou25", {"over", "under"}),
+    ):
+        for fid, sel_map in _latest_devigged(fids, src_market, sels).items():
+            for sel, (med, devig_p) in sel_map.items():
+                rows.append({
+                    "fixture_id": fid,
+                    "market": market,
+                    "selection": sel,
+                    "decimal_odds": round(med, 3),
+                    "devigged_p": round(devig_p, 4),
+                    "recorded_at": now,
+                })
+    for batch in chunked(rows):
+        sb().table("closing_odds").upsert(batch, on_conflict="fixture_id,market,selection").execute()
+    print(f"[write_db] recorded closing odds for {len({r['fixture_id'] for r in rows})} fixtures")
+
+
 def settle_picks():
-    """Settle published, non-retired picks on finished fixtures (spec v4.1 §4.2)."""
+    """Settle every published pick on finished fixtures (spec v4.1 §4.2) —
+    INCLUDING retired ones: a pick that was live for days before being retired
+    was followable, and excluding it would select losers out of the public
+    record. Also stamps each pick's CLV (published odds vs the closing price)."""
     open_picks = (
-        sb().table("picks").select("id, fixture_id, market, selection")
-        .is_("outcome", "null").is_("retired_at", "null")
+        sb().table("picks").select("id, fixture_id, market, selection, market_odds")
+        .is_("outcome", "null")
         .execute().data
     )
     if not open_picks:
@@ -108,6 +144,13 @@ def settle_picks():
         if f["home_goals"] is not None
     }
     corners = _corner_counts(list(fixtures))
+    closing: dict[tuple, float] = {}
+    for i in range(0, len(fids), 100):
+        for c in (
+            sb().table("closing_odds").select("fixture_id, market, selection, decimal_odds")
+            .in_("fixture_id", fids[i : i + 100]).execute().data
+        ):
+            closing[(c["fixture_id"], c["market"], c["selection"])] = float(c["decimal_odds"])
     settled = 0
     for p in open_picks:
         f = fixtures.get(p["fixture_id"])
@@ -119,7 +162,12 @@ def settle_picks():
             f.get("duration") or "REGULAR", f.get("ht_home_goals"), f.get("ht_away_goals"),
         )
         if out is not None:
-            sb().table("picks").update({"outcome": out}).eq("id", p["id"]).execute()
+            patch = {"outcome": out}
+            close = closing.get((p["fixture_id"], p["market"], p["selection"]))
+            if close and close > 1 and p["market_odds"]:
+                patch["closing_odds"] = round(close, 3)
+                patch["clv"] = round(float(p["market_odds"]) / close - 1, 4)
+            sb().table("picks").update(patch).eq("id", p["id"]).execute()
             settled += 1
     if settled:
         print(f"[write_db] settled {settled} picks")
@@ -213,17 +261,17 @@ def log_finished_predictions():
                 }
             )
             # market baseline (spec v4 §5.4): de-vigged closing odds, recovered
-            # from edge = p_model - p_market on the free pipeline's 1x2 rows
-            if p["pipeline"] == "free" and p["market"] == "1x2" and p["edge"] is not None:
+            # from edge = p_model - p_market on the free pipeline's priced rows
+            if p["pipeline"] == "free" and p["market"] in ("1x2", "ou25") and p["edge"] is not None:
                 p_market = float(p["probability"]) - float(p["edge"])
                 rows.append(
                     {
                         "pipeline": "market",
                         "fixture_id": f["id"],
-                        "market": "1x2",
+                        "market": p["market"],
                         "selection": p["selection"],
                         "probability": round(min(max(p_market, 0.0), 1.0), 4),
-                        "outcome": outcome("1x2", p["selection"], f["home_goals"], f["away_goals"], f["id"]),
+                        "outcome": outcome(p["market"], p["selection"], f["home_goals"], f["away_goals"], f["id"]),
                     }
                 )
     for batch in chunked(rows):

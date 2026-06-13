@@ -75,7 +75,10 @@ def _odds_rows(fixture_id: int, payload) -> list[dict]:
     now = _now()
     for bm in as_list(payload, "odds", "bookmakers"):
         bm_name = str(pick(bm, "bookmaker", "name", "key", default="statsapi"))
-        for phase in ("opening", "closing", "current"):
+        # ONE phase per bookmaker, freshest first: mixing opening/closing/current
+        # rows under one fetched_at would let stale opening prices contaminate
+        # the "latest" median that the de-vig consumes.
+        for phase in ("current", "closing", "opening"):
             block = bm.get(phase) if isinstance(bm.get(phase), (dict, list)) else None
             markets = as_list(block or bm, "markets")
             for mkt in markets:
@@ -88,7 +91,7 @@ def _odds_rows(fixture_id: int, payload) -> list[dict]:
                         if sel in ("home", "draw", "away") and pick(o, "price", "odds") is not None:
                             rows.append({
                                 "fixture_id": fixture_id,
-                                "bookmaker": f"{bm_name}:{phase}",
+                                "bookmaker": bm_name,
                                 "market": "h2h",
                                 "selection": sel,
                                 "decimal_odds": pick(o, "price", "odds"),
@@ -106,16 +109,15 @@ def _odds_rows(fixture_id: int, payload) -> list[dict]:
                         if market_key and sel in ("over", "under") and pick(o, "price", "odds") is not None:
                             rows.append({
                                 "fixture_id": fixture_id,
-                                "bookmaker": f"{bm_name}:{phase}",
+                                "bookmaker": bm_name,
                                 "market": market_key,
                                 "selection": sel,
                                 "decimal_odds": pick(o, "price", "odds"),
                                 "fetched_at": now,
                                 "source": "statsapi",
                             })
-            if block is None:
-                break  # bookmaker payload wasn't phase-split; don't re-read it 3x
-    return rows
+            if markets:
+                break  # freshest phase found (or payload wasn't phase-split)
 
 
 def ingest_match_odds():

@@ -38,7 +38,7 @@ Optional engine overrides (also env): `STATSAPI_BASE`, plus every key in
 | Source | Limit | Discipline |
 |---|---|---|
 | football-data.org | 10 req/min (free) | 2–3 requests/run, calls spaced ≥6.5s, cached in `api_cache` (TTL 600s) |
-| The Odds API | 500 credits/month | one bulk call = 1 credit (single market × single region — never widen casually: 3 regions × 2 markets = 6×); reads `x-requests-remaining`, skips odds below a 60-credit reserve (predictions keep flowing, only `edge` staleness) |
+| The Odds API | 500 credits/month | one bulk call = 1 credit per market (single region; `ODDS_MARKETS=h2h` default, `h2h,totals` = 2× on a paid plan); **kickoff-aware budget** — no pull when the nearest kickoff is >48h away, then ~hourly within 2h / ~3h within 12h / ~6h otherwise, so hourly cron over the tournament doesn't exhaust the month before the knockouts; also reads `x-requests-remaining` and skips below a 60-credit reserve (predictions keep flowing, only `edge` staleness) |
 | TheStatsAPI | 100k/month, 120/min | calls spaced ≥0.5s, cached (TTL 600s; 60s live, 24h finished-match stats); live poller self-exits when idle |
 
 Storage (500 MB Supabase free cap): `odds_snapshots` pruned 14 days after a
@@ -113,10 +113,11 @@ STATSAPI_KEY=... python -m engine.calibrate
   `prediction_log` is a manual exercise for now (re-run with a different
   `BLEND_W_MARKET` env).
 - **Market baseline** in `prediction_log` is recovered from the free pipeline's
-  `probability − edge` at logging time, i.e. the last pre-finish odds pull —
-  close to, but not formally, the closing line. (If the §5.0 odds probe finds
-  TheStatsAPI odds available, formal opening/closing lines land in
-  `odds_snapshots` with `source='statsapi'` and close this gap.)
+  `probability − edge`. Since v4.2 predictions freeze at kickoff (models read
+  only `scheduled` fixtures), so this is the genuine pre-kickoff price, not an
+  in-play one. The dedicated `closing_odds` table additionally persists the
+  closing de-vigged median per selection (it survives `odds_snapshots` pruning)
+  and feeds each pick's CLV stamp.
 - **First-half markets can't be settled** (`prediction_log.outcome` stays NULL
   for `ht_1x2`/`ou*_1h`/`htft`): full-time goals don't record the half-time
   score. They therefore never reach 30 scored matches and never become picks —
