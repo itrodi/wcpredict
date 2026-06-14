@@ -119,6 +119,61 @@ def main():
     check("NB pmf sums to 1", abs(pmf.sum() - 1) < 1e-9)
     check("NB pmf mean matches mu", abs(float((np.arange(len(pmf)) * pmf).sum()) - 9.7) < 0.3)
 
+    print("== Corners team model (attack/defense + shrinkage) ==")
+    from .match_model_b import corners_markets, fixture_corner_ctx
+    lam_h0, lam_a0 = elo_lambdas(1800, 1800, False)
+    high = {"league_team": 5.0, "k": 9.0, "sig": {
+        (1, "corner_pace_for"): 7.5, (1, "corner_pace_against"): 4.0, (1, "corner_games"): 6,
+        (2, "corner_pace_for"): 6.5, (2, "corner_pace_against"): 4.5, (2, "corner_games"): 6,
+    }}
+    ctx = fixture_corner_ctx(high, 1, 2, lam_h0, lam_a0)
+    by_ctx = probs(corners_markets(lam_h0, lam_a0, 0.0, ctx))
+    by_def = probs(corners_markets(lam_h0, lam_a0, 0.0))
+    check("corner ctx complements hold",
+          abs(by_ctx["corners_o95"]["over"] + by_ctx["corners_o95"]["under"] - 1) < 1e-9)
+    check("high-pace teams lift corners overs vs the formula",
+          by_ctx["corners_o95"]["over"] > by_def["corners_o95"]["over"],
+          f"ctx={by_ctx['corners_o95']['over']:.3f} def={by_def['corners_o95']['over']:.3f}")
+    # with no signals the per-team means shrink to the league prior (~5 each)
+    ctx0 = fixture_corner_ctx({"league_team": 5.0, "k": 9.0, "sig": {}}, 1, 2, lam_h0, lam_a0)
+    check("no-data corners shrink to league prior",
+          abs(ctx0["mu_h"] - 5.0) < 0.6 and abs(ctx0["mu_a"] - 5.0) < 0.6,
+          f"mu_h={ctx0['mu_h']:.2f} mu_a={ctx0['mu_a']:.2f}")
+    # a low-corner side drags the line down
+    low = {"league_team": 5.0, "k": 9.0, "sig": {
+        (1, "corner_pace_for"): 2.5, (1, "corner_pace_against"): 3.0, (1, "corner_games"): 6,
+        (2, "corner_pace_for"): 2.8, (2, "corner_pace_against"): 3.2, (2, "corner_games"): 6,
+    }}
+    by_low = probs(corners_markets(lam_h0, lam_a0, 0.0, fixture_corner_ctx(low, 1, 2, lam_h0, lam_a0)))
+    check("low-pace teams suppress corners overs",
+          by_low["corners_o95"]["over"] < by_def["corners_o95"]["over"])
+
+    print("== Picks candidate classification ==")
+    from .picks import _candidate_tiers
+    cal = {"1x2", "ou25", "btts"}
+
+    def mkrow(**kw):
+        return {"fixture_id": 1, "edge": None, "market_odds": None, **kw}
+
+    c = _candidate_tiers(mkrow(market="corners_o85", selection="over", probability=0.70), cal)
+    check("experimental corners over -> model-only banker",
+          len(c) == 1 and c[0]["tier"] == "banker" and c[0]["model_only"] and c[0]["category"] == "overs")
+    c = _candidate_tiers(mkrow(market="corners_o85", selection="under", probability=0.70), cal)
+    check("corners under is not a model banker (overs side only)", c == [])
+    c = _candidate_tiers(mkrow(market="ou25", selection="over", probability=0.66, edge=0.06, market_odds=1.9), cal)
+    check("priced ou25 over -> both banker and value candidates",
+          sorted(x["tier"] for x in c) == ["banker", "value"])
+    c = _candidate_tiers(mkrow(market="corners_o105", selection="over", probability=0.50), cal)
+    check("low-confidence corners over -> nothing", c == [])
+    c = _candidate_tiers(mkrow(market="ou05_1h", selection="over", probability=0.95), cal)
+    check("trivially short model banker filtered by odds floor", c == [])
+    c = _candidate_tiers(mkrow(market="1x2", selection="home", probability=0.70, edge=0.02, market_odds=1.5), cal)
+    check("strong 1x2 from blend -> result banker",
+          any(x["tier"] == "banker" and x["category"] == "result" for x in c))
+    c = _candidate_tiers(mkrow(market="btts", selection="yes", probability=0.64), cal)
+    check("btts yes with no book -> model banker (overs)",
+          len(c) == 1 and c[0]["tier"] == "banker" and c[0]["category"] == "overs")
+
     print("== Ratings ==")
     check("Elo expectancy at 0 is 0.5", abs(_expected(0) - 0.5) < 1e-12)
     check("Elo expectancy monotone", _expected(200) > _expected(100) > _expected(0))

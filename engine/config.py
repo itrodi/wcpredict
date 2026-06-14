@@ -61,6 +61,14 @@ MODEL_PARAMS = {
     "CORNERS_B": _f("CORNERS_B", 1.1),
     "CORNERS_C": _f("CORNERS_C", -0.002),
     "CORNERS_K": _f("CORNERS_K", 9.0),
+    # v4.4 team-level corners (attack/defense decomposition from match_stats):
+    # per-team mu = W*own_corner_rate + (1-W)*opponent_conceded_rate, each
+    # empirical-Bayes shrunk toward the league mean by a K0 pseudo-count, then
+    # scaled by match tempo and a small strength tilt. Degrades to the formula
+    # above when no corner signals exist yet (early tournament).
+    "CORNER_SHRINK_K0": _f("CORNER_SHRINK_K0", 4.0),   # prior weight in matches
+    "CORNER_ATTACK_W": _f("CORNER_ATTACK_W", 0.6),     # own-rate vs opp-conceded weight
+    "CORNER_TILT": _f("CORNER_TILT", 0.12),            # strength tilt on the corner split
     # blend.py: p = w*p_market + (1-w)*p_model
     "BLEND_W_MARKET": _f("BLEND_W_MARKET", 0.7),
     # simulate.py knockouts: P(advance) = P(win 90') + P(draw 90') * p_et where

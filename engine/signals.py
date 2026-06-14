@@ -111,6 +111,7 @@ def run():
         if a["corner_games"]:
             add(team, "corner_pace_for", a["corners_for"] / a["corner_games"])
             add(team, "corner_pace_against", a["corners_against"] / a["corner_games"])
+            add(team, "corner_games", a["corner_games"])  # sample size for the model's shrinkage
         tshots = [s for s in shots_by[team] if s["xg"] is not None]
         if tshots:
             big = sum(1 for s in tshots if float(s["xg"]) >= BIG_CHANCE_XG)

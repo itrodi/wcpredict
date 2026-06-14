@@ -7,11 +7,12 @@ team_corners_home_o45 / team_corners_away_o45. All rows pipeline='statsapi'.
 Corners ship "experimental" until model_scores shows >= EXPERIMENTAL_MIN_N.
 """
 import math
+from collections import defaultdict
 
 import numpy as np
 
 from . import config
-from .db import sb
+from .db import fetch_all, sb
 from .match_model import _latest_devigged, _latest_devigged_h2h, elo_lambdas, power_devig
 
 P = config.MODEL_PARAMS
@@ -51,19 +52,82 @@ def nb_pmf_vector(mu: float, k: float, n_max: int = 30) -> np.ndarray:
     return out / out.sum()
 
 
-def corners_markets(lam_h: float, lam_a: float, elo_diff: float) -> list[tuple[str, str, float]]:
-    mu_total = max(2.0, P["CORNERS_A"] + P["CORNERS_B"] * (lam_h + lam_a) + P["CORNERS_C"] * abs(elo_diff))
-    k = P["CORNERS_K"]
+def load_corner_model() -> dict:
+    """Tournament corner baseline + dispersion from finished match_stats, plus
+    per-team shrunken corner-for / corner-against rates (from team_signals).
+
+    Early in the tournament there are few finished matches, so the league mean
+    falls back to the formula's implied average and the per-team rates shrink
+    hard toward it — the model degrades gracefully to the old behaviour and
+    sharpens as real corner data accumulates."""
+    ms = fetch_all(
+        lambda: sb().table("match_stats").select("fixture_id, corners").eq("period", "FT").order("id")
+    )
+    by_fx: dict[int, list[float]] = defaultdict(list)
+    for r in ms:
+        if r["corners"] is not None:
+            by_fx[r["fixture_id"]].append(float(r["corners"]))
+    totals = [sum(v) for v in by_fx.values() if len(v) == 2]
+    if len(totals) >= 5:
+        league_total = float(np.mean(totals))
+        var = float(np.var(totals))
+        k = league_total ** 2 / (var - league_total) if var > league_total else P["CORNERS_K"]
+        k = float(min(max(k, 2.0), 40.0))
+    else:
+        # implied mean of the formula at an average-tempo, even match
+        league_total = max(6.0, P["CORNERS_A"] + P["CORNERS_B"] * config.TOTAL_GOALS)
+        k = float(P["CORNERS_K"])
+    sig = {
+        (s["team_id"], s["signal"]): float(s["value"])
+        for s in sb().table("team_signals").select("team_id, signal, value")
+        .in_("signal", ["corner_pace_for", "corner_pace_against", "corner_games"]).execute().data
+    }
+    return {"league_team": league_total / 2.0, "k": k, "sig": sig}
+
+
+def fixture_corner_ctx(model: dict, home_id: int, away_id: int,
+                       lam_h: float, lam_a: float) -> dict:
+    """Per-team corner means from the attack/defense decomposition, shrunk to
+    the league prior and tempo/strength adjusted."""
+    prior, sig = model["league_team"], model["sig"]
+    k0 = P["CORNER_SHRINK_K0"]
+
+    def rate(tid: int, kind: str) -> float:
+        v = sig.get((tid, f"corner_pace_{kind}"))
+        if v is None:
+            return prior
+        n = sig.get((tid, "corner_games"), 0.0)
+        return (n * v + k0 * prior) / (n + k0)   # empirical-Bayes shrink to the league mean
+
+    w = P["CORNER_ATTACK_W"]
+    mu_h = w * rate(home_id, "for") + (1 - w) * rate(away_id, "against")
+    mu_a = w * rate(away_id, "for") + (1 - w) * rate(home_id, "against")
+    tempo = min(max((lam_h + lam_a) / config.TOTAL_GOALS, 0.85), 1.2)
+    share_h = lam_h / (lam_h + lam_a)
+    tilt = 1.0 + P["CORNER_TILT"] * (2 * share_h - 1)   # favourite forces a few more
+    return {"mu_h": max(0.5, mu_h * tempo * tilt),
+            "mu_a": max(0.5, mu_a * tempo * (2 - tilt)),
+            "k": model["k"]}
+
+
+def corners_markets(lam_h: float, lam_a: float, elo_diff: float,
+                    corner_ctx: dict | None = None) -> list[tuple[str, str, float]]:
+    if corner_ctx is not None:
+        mu_h, mu_a, k = corner_ctx["mu_h"], corner_ctx["mu_a"], corner_ctx["k"]
+        mu_total = max(2.0, mu_h + mu_a)
+    else:
+        # fallback: single total split by attacking (lambda) share
+        mu_total = max(2.0, P["CORNERS_A"] + P["CORNERS_B"] * (lam_h + lam_a) + P["CORNERS_C"] * abs(elo_diff))
+        k = P["CORNERS_K"]
+        share_h = lam_h / (lam_h + lam_a)
+        mu_h, mu_a = mu_total * share_h, mu_total * (1 - share_h)
     pmf = nb_pmf_vector(mu_total, k)
     rows = []
     for line, name in ((8.5, "corners_o85"), (9.5, "corners_o95"), (10.5, "corners_o105")):
         over = float(pmf[int(line) + 1 :].sum())
         rows.append((name, "over", over))
         rows.append((name, "under", 1.0 - over))
-    # team corners: split mu by attacking share (lambda share), same dispersion
-    share_h = lam_h / (lam_h + lam_a)
-    for mu_team, name in ((mu_total * share_h, "team_corners_home_o45"),
-                          (mu_total * (1 - share_h), "team_corners_away_o45")):
+    for mu_team, name in ((mu_h, "team_corners_home_o45"), (mu_a, "team_corners_away_o45")):
         pmf_t = nb_pmf_vector(max(0.5, mu_team), k)
         over = float(pmf_t[5:].sum())
         rows.append((name, "over", over))
@@ -79,7 +143,8 @@ def corners_markets(lam_h: float, lam_a: float, elo_diff: float) -> list[tuple[s
     return rows
 
 
-def markets_for_fixture(elo_h: float, elo_a: float, host_home: bool) -> list[tuple[str, str, float]]:
+def markets_for_fixture(elo_h: float, elo_a: float, host_home: bool,
+                        corner_ctx: dict | None = None) -> list[tuple[str, str, float]]:
     lam_h, lam_a = elo_lambdas(elo_h, elo_a, host_home)
     rho = P["DC_RHO"]
     m = dc_scoreline_matrix(lam_h, lam_a, rho)
@@ -127,7 +192,7 @@ def markets_for_fixture(elo_h: float, elo_a: float, host_home: bool) -> list[tup
         ):
             rows.append(("htft", f"{ht_sel}_{ft_sel}", ht_p[ht_sel] * float(m2[mask].sum())))
 
-    rows += corners_markets(lam_h, lam_a, elo_h - elo_a)
+    rows += corners_markets(lam_h, lam_a, elo_h - elo_a, corner_ctx)
     return rows
 
 
@@ -178,13 +243,16 @@ def run() -> list[dict]:
     book = _latest_devigged_h2h(fids)
     book_ou = _latest_devigged(fids, "ou25", {"over", "under"})
     corners_book = _latest_corners_odds(fids)
+    corner_model = load_corner_model()
 
     rows = []
     for f in fixtures:
         th, ta = teams[f["home_id"]], teams[f["away_id"]]
         elo_h = float(th["elo_xg"] if th["elo_xg"] is not None else th["elo"])
         elo_a = float(ta["elo_xg"] if ta["elo_xg"] is not None else ta["elo"])
-        for market, selection, p in markets_for_fixture(elo_h, elo_a, bool(f["host_home"])):
+        lam_h, lam_a = elo_lambdas(elo_h, elo_a, bool(f["host_home"]))
+        cctx = fixture_corner_ctx(corner_model, f["home_id"], f["away_id"], lam_h, lam_a)
+        for market, selection, p in markets_for_fixture(elo_h, elo_a, bool(f["host_home"]), cctx):
             p = min(max(p, 0.0), 1.0)
             row = {
                 "pipeline": config.PIPELINE_STATSAPI,
