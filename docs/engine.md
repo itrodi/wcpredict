@@ -44,16 +44,26 @@ without code changes.
   official 104 into `ops_status`; `main.py` ends each run with a Pipeline A
   coverage check. Unmapped vendor team names are recorded verbatim so adding an
   alias is copy-paste from `/admin/health`.
-- **Picks rules** (`picks.py`): calibrated markets only (`model_scores.n ≥ 30`
-  **and** `beats_baseline`; 1x2/ou25/btts exempt), Banker = p ≥ 0.65 ∧ edge ≥
-  −0.01 (1x2 bankers come from the blend), Value = **model**-pipeline rows with
-  edge ≥ 0.04 ∧ p ≥ 0.25 ∧ `p·odds > 1` (positive EV at the *quoted* price — an
-  edge over the de-vigged probability alone can still lose to the vig on
-  favourites), ranked by the true Kelly fraction `(p·odds − 1)/(odds − 1)`;
-  ≤2/fixture, ≤10/tier. Material changes retire-and-republish;
-  `write_db.settle_picks` settles **every** published pick incl. retired ones
-  (corners settle from `match_stats`, 1H markets from the stored HT score) and
-  stamps CLV from `closing_odds`.
+- **Picks rules** (`picks.py`) — results **and** overs (v4.4):
+  - **Banker** = high model probability. For 1x2 it comes from the blend
+    (p ≥ 0.65, edge ≥ −0.01). For the **overs** markets (ou25, btts, 1H totals,
+    corners, team corners) a banker is the over/yes side clearing a per-market
+    probability floor (≈0.60–0.66); these are model-only when no book price
+    exists, priced at fair odds (1/p) with a 1.25 fair-odds floor so trivially
+    short lines are skipped. Corners are banker-eligible **even while
+    experimental** (badged in the UI) — we surface the model's confidence and
+    settle it publicly, but never claim *value* on an unproven/unpriced market.
+  - **Value** = a calibrated market with a book edge that is positive-EV at the
+    *quoted* price (edge ≥ 0.04 ∧ p ≥ 0.25 ∧ `p·odds > 1`), ranked by the true
+    Kelly fraction `(p·odds − 1)/(odds − 1)`. ou25 gets a book line when
+    `ODDS_MARKETS` includes `totals`; corners only if the StatsAPI odds probe
+    succeeds.
+  - Caps: ≤2/fixture and ≤`MAX_PER_CATEGORY` per tier **per category**
+    (`result` vs `overs`) so overs always get airtime instead of being crowded
+    out by short-priced favourites. Material changes retire-and-republish;
+    `write_db.settle_picks` settles **every** published pick incl. retired ones
+    (corners settle from `match_stats`, 1H markets from the stored HT score) and
+    stamps CLV from `closing_odds`.
 - **Leak plugs** (v4.3): the picks engine suppresses a fixture entirely when a
   confirmed lineup shows ≥2 key absences for any side (rotation — the market
   reprices on the team sheet, an Elo model does not), or `fixture_incentives`
@@ -123,11 +133,19 @@ at the remaining goal share, convolved over one representative half-time
 scoreline per HT outcome (1-0 / 0-0 / 0-1) — its nine probabilities sum to ~1
 within ~2%.
 
-**Corners (negative binomial, NB2)**: total mean
-`μ = 7.0 + 1.1·(λ_h+λ_a) − 0.002·|elo_diff|`, dispersion `k = 9`
-(var = μ + μ²/k). Markets: totals over/under 8.5 / 9.5 / 10.5; team corners
-over/under 4.5 with μ split by λ share. **Experimental-badged** until
-`model_scores.n ≥ 30` for the market.
+**Corners (negative binomial, NB2)** — team-level attack/defense (v4.4): each
+side's mean is `μ_team = W·(own corner-pace-for) + (1−W)·(opponent's
+corner-pace-against)`, where the rates come from `team_signals` (built from
+`match_stats` corners) and are **empirical-Bayes shrunk** toward the tournament
+mean by a `CORNER_SHRINK_K0`-match pseudo-count — so early on, with little data,
+the line sits near the league average and sharpens as real corners accumulate.
+The pair is then scaled by match tempo `(λ_h+λ_a)/2.6` (clamped) and a small
+strength tilt. `μ_total = μ_home + μ_away`; dispersion `k` is fitted from the
+empirical variance of finished-match total corners (falls back to 9). When no
+corner signals exist yet the model degrades to the old formula
+`μ = 7.0 + 1.1·(λ_h+λ_a) − 0.002·|elo_diff|` split by λ share. Markets: totals
+over/under 8.5 / 9.5 / 10.5; team corners over/under 4.5. **Experimental-badged**
+until `model_scores.n ≥ 30` **and** `beats_baseline`.
 
 ## Blend (`blend-w0.7`)
 

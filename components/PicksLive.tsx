@@ -50,10 +50,18 @@ function PickCard({ pick, experimental }: { pick: PickRow; experimental: boolean
       </div>
       <ProbabilityBar label="Model" probability={Number(pick.probability)} highlight />
       <div className="mt-1.5 text-xs text-zinc-500">
-        book {odds(pick.market_odds)} · edge{" "}
-        <span className={Number(pick.edge) > 0 ? "text-accent" : "text-zinc-400"}>
-          {pick.edge != null ? `${Number(pick.edge) > 0 ? "+" : ""}${(Number(pick.edge) * 100).toFixed(1)}%` : "–"}
-        </span>
+        {pick.market_odds != null ? (
+          <>
+            book {odds(pick.market_odds)} · edge{" "}
+            <span className={Number(pick.edge) > 0 ? "text-accent" : "text-zinc-400"}>
+              {pick.edge != null
+                ? `${Number(pick.edge) > 0 ? "+" : ""}${(Number(pick.edge) * 100).toFixed(1)}%`
+                : "–"}
+            </span>
+          </>
+        ) : (
+          <>model fair {odds(1 / Number(pick.probability))} · no book price yet</>
+        )}
         {" · "}published {kickoffFmt(pick.published_at)}
       </div>
       {pick.rationale && pick.rationale.length > 0 && (
@@ -122,7 +130,10 @@ export default function PicksLive({
     <div className="grid gap-8 lg:grid-cols-2">
       <section>
         <h2 className="mb-3 text-lg font-bold text-zinc-100">
-          Bankers <span className="text-sm font-normal text-zinc-500">high-confidence (p ≥ 65%)</span>
+          Bankers{" "}
+          <span className="text-sm font-normal text-zinc-500">
+            high-confidence model plays — results &amp; overs (goals, corners)
+          </span>
         </h2>
         <div className="space-y-4">
           {bankers.length === 0 && <p className="text-sm text-zinc-600">None live.</p>}
@@ -133,7 +144,10 @@ export default function PicksLive({
       </section>
       <section>
         <h2 className="mb-3 text-lg font-bold text-zinc-100">
-          Value <span className="text-sm font-normal text-zinc-500">edge ≥ 4pts vs market</span>
+          Value{" "}
+          <span className="text-sm font-normal text-zinc-500">
+            +EV vs the book (edge ≥ 4pts), priced markets only
+          </span>
         </h2>
         <div className="space-y-4">
           {value.length === 0 && <p className="text-sm text-zinc-600">None live.</p>}

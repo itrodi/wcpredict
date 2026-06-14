@@ -93,9 +93,11 @@ export default async function PicksPage() {
         <div>
           <h1 className="mb-1 text-2xl font-bold text-zinc-100">Site picks</h1>
           <p className="max-w-xl text-sm text-zinc-500">
-            Rule-generated from the site model — calibrated markets only, capped at 10 per tier and
-            2 per fixture, immutable once published, and every settled pick is scored below in
-            public. No hand-picking, no deleting losers.
+            Rule-generated from the site model across results <em>and</em> overs markets (goals,
+            corners, team corners). Bankers are high-confidence model plays (priced at fair odds
+            when no book line exists); value plays need a positive edge against the book. Capped per
+            market type and per fixture, immutable once published, and every settled pick — retired
+            ones included — is scored below in public. No hand-picking, no deleting losers.
           </p>
         </div>
 
