@@ -147,6 +147,17 @@ def main():
     by_low = probs(corners_markets(lam_h0, lam_a0, 0.0, fixture_corner_ctx(low, 1, 2, lam_h0, lam_a0)))
     check("low-pace teams suppress corners overs",
           by_low["corners_o95"]["over"] < by_def["corners_o95"]["over"])
+    # shot-informed prior: with NO corner signals, a heavy-shooting team still
+    # gets a higher corner line than a low-shooting one (shots inform the prior)
+    shot_model = {"league_team": 5.0, "k": 9.0, "sig": {},
+                  "corner_per_shot": 0.4, "team_shot_avg": {1: 16.0, 2: 16.0}}
+    quiet_model = {"league_team": 5.0, "k": 9.0, "sig": {},
+                   "corner_per_shot": 0.4, "team_shot_avg": {1: 8.0, 2: 8.0}}
+    ctx_shooty = fixture_corner_ctx(shot_model, 1, 2, lam_h0, lam_a0)
+    ctx_quiet = fixture_corner_ctx(quiet_model, 1, 2, lam_h0, lam_a0)
+    check("shot volume informs the corner prior (no corner data)",
+          ctx_shooty["mu_h"] > ctx_quiet["mu_h"],
+          f"shooty_mu={ctx_shooty['mu_h']:.2f} quiet_mu={ctx_quiet['mu_h']:.2f}")
 
     print("== Picks candidate classification ==")
     from .picks import _candidate_tiers

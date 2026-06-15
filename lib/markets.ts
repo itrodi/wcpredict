@@ -67,12 +67,13 @@ export const MARKETS: Record<string, MarketDef> = {
       return ht && ft ? `${RESULT_SELECTIONS[ht] ?? cap(ht)} / ${RESULT_SELECTIONS[ft] ?? cap(ft)}` : cap(sel);
     },
   },
-  corners_o85: ou("corners_o85", "Total corners 8.5", "Corners", 80, EXPERIMENTAL_MIN_N),
-  corners_o95: ou("corners_o95", "Total corners 9.5", "Corners", 90, EXPERIMENTAL_MIN_N),
-  corners_o105: ou("corners_o105", "Total corners 10.5", "Corners", 100, EXPERIMENTAL_MIN_N),
-  corners_1h_o45: ou("corners_1h_o45", "1st half corners 4.5", "Corners", 105, EXPERIMENTAL_MIN_N),
-  team_corners_home_o45: ou("team_corners_home_o45", "Home team corners 4.5", "Corners", 110, EXPERIMENTAL_MIN_N),
-  team_corners_away_o45: ou("team_corners_away_o45", "Away team corners 4.5", "Corners", 120, EXPERIMENTAL_MIN_N),
+  // Corners are a solid, data-driven market (v4.5) — no longer experimental-badged.
+  corners_o85: ou("corners_o85", "Total corners 8.5", "Corners", 80),
+  corners_o95: ou("corners_o95", "Total corners 9.5", "Corners", 90),
+  corners_o105: ou("corners_o105", "Total corners 10.5", "Corners", 100),
+  corners_1h_o45: ou("corners_1h_o45", "1st half corners 4.5", "Corners", 105),
+  team_corners_home_o45: ou("team_corners_home_o45", "Home team corners 4.5", "Corners", 110),
+  team_corners_away_o45: ou("team_corners_away_o45", "Away team corners 4.5", "Corners", 120),
   cs: {
     label: "Correct score",
     group: "Scoreline",

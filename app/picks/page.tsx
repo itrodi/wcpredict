@@ -1,9 +1,17 @@
 import Link from "next/link";
 
+import MatchVerdicts from "@/components/MatchVerdicts";
 import PicksLive from "@/components/PicksLive";
 import { EXPERIMENTAL_MIN_N } from "@/lib/markets";
+import { resolveView } from "@/lib/pipeline";
 import { supabaseServer } from "@/lib/supabase/server";
 import type { ModelScore, PickRow } from "@/lib/types";
+import { buildVerdicts, type Verdict, type VerdictRow } from "@/lib/verdicts";
+
+const VERDICT_SELECT =
+  "pipeline, market, selection, probability, fixture_id, " +
+  "fixtures!inner(kickoff, status, home:teams!fixtures_home_id_fkey(name), away:teams!fixtures_away_id_fkey(name))";
+const VERDICT_MARKETS = ["1x2", "ou25", "corners_o85", "corners_o95", "corners_o105"];
 
 export const revalidate = 300;
 
@@ -66,8 +74,11 @@ export default async function PicksPage() {
   let live: PickRow[] = [];
   let settled: PickRow[] = [];
   let calibrated: string[] = [];
+  let verdicts: Verdict[] = [];
   if (sb) {
-    const [{ data: l }, { data: s }, { data: scores }] = await Promise.all([
+    const view = await resolveView({}, sb);
+    const horizon = new Date(Date.now() + 10 * 86400_000).toISOString();
+    const [{ data: l }, { data: s }, { data: scores }, { data: vrows }] = await Promise.all([
       sb
         .from("picks")
         .select(PICK_SELECT)
@@ -79,10 +90,24 @@ export default async function PicksPage() {
         .select("*")
         .not("outcome", "is", null),
       sb.from("model_scores").select("*").gte("n", EXPERIMENTAL_MIN_N).eq("beats_baseline", true),
+      sb
+        .from("match_predictions")
+        .select(VERDICT_SELECT)
+        .in("pipeline", [view.blendPipeline, view.modelPipeline])
+        .in("market", VERDICT_MARKETS)
+        .eq("fixtures.status", "scheduled")
+        .gte("fixtures.kickoff", new Date().toISOString())
+        .lte("fixtures.kickoff", horizon)
+        .limit(1000),
     ]);
     live = (l as unknown as PickRow[] | null) ?? [];
     settled = (s as PickRow[] | null) ?? [];
     calibrated = ((scores as ModelScore[] | null) ?? []).map((x) => x.market);
+    verdicts = buildVerdicts(
+      (vrows as unknown as VerdictRow[] | null) ?? [],
+      view.blendPipeline,
+      view.modelPipeline
+    );
   }
 
   const record = trackRecord(settled);
@@ -175,6 +200,18 @@ export default async function PicksPage() {
         </a>
         .
       </div>
+
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-lg font-bold text-zinc-100">Every match — the model&rsquo;s top call</h2>
+          <p className="text-sm text-zinc-500">
+            The single most-confident pick per market (result, goals, corners) for every upcoming
+            fixture, with the dominant pick highlighted. These are model projections for browsing —
+            not the disciplined, tracked Bankers &amp; Value picks below.
+          </p>
+        </div>
+        <MatchVerdicts verdicts={verdicts} />
+      </section>
 
       <PicksLive initial={live} calibratedMarkets={calibrated} />
     </div>
