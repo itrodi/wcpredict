@@ -52,8 +52,11 @@ def run():
             print(f"[live] poll failed for fixture {f['id']}: {e}")
             continue
 
-        state = str(pick(match, "status", "state", default="")).lower()
-        score = pick(match, "score", default={}) or {}
+        # both endpoints wrap the resource under "data"
+        mdata = match.get("data", match) if isinstance(match, dict) else {}
+        sdata = stats.get("data", stats) if isinstance(stats, dict) else {}
+        state = str(pick(mdata, "status", "state", default="")).lower()
+        score = pick(mdata, "score", default={}) or {}
         patch = {}
         if state in LIVE_STATES:
             patch["status"] = "live"
@@ -69,7 +72,9 @@ def run():
         if patch:
             sb().table("fixtures").update(patch).eq("id", f["id"]).execute()
 
-        rows = _stat_rows(f["id"], stats, team_map)
+        home_tid = team_map.get(str(pick(pick(mdata, "home_team", "homeTeam", default={}), "id", "team_id")))
+        away_tid = team_map.get(str(pick(pick(mdata, "away_team", "awayTeam", default={}), "id", "team_id")))
+        rows = _stat_rows(f["id"], sdata, home_tid, away_tid)
         if rows:
             sb().table("match_stats").upsert(rows, on_conflict="fixture_id,team_id,period").execute()
         print(f"[live] fixture {f['id']}: state={state} score={hg}-{ag} stats_rows={len(rows)}")

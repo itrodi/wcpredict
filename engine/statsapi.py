@@ -122,13 +122,16 @@ def _is_mens_wc(name: str) -> bool:
 
 def find_world_cup_season(force: bool = False) -> tuple[str, str]:
     """Resolve (competition_id, season_id) for the men's senior World Cup; cached
-    a day. `force` re-resolves even if cached (used after a matches lookup fails,
-    in case a stale/wrong competition got cached)."""
+    a day. Per the API docs the active season is NOT a `/seasons` list — it lives
+    on the competition DETAIL object as `current_season_id`. `force` re-resolves
+    even if cached (used after a matches lookup fails)."""
     if not force:
         hit = cache.get("statsapi:wc_season")
         if hit:
             return hit["competition_id"], hit["season_id"]
-    comps = get_all("/competitions")
+    comps = get_all("/competitions", params={"search": config.STATSAPI_WC_NAME})
+    if not comps:
+        comps = get_all("/competitions")
     wc_like = [c for c in comps if _is_mens_wc(str(pick(c, "name", "title", default="")))]
     # prefer an exactly-named 'FIFA World Cup' over qualifiers/variants
     wc = next(
@@ -140,18 +143,12 @@ def find_world_cup_season(force: bool = False) -> tuple[str, str]:
         raise StatsApiError("men's FIFA World Cup not found in /competitions")
     comp_id = str(pick(wc, "id", "competition_id"))
     comp_name = pick(wc, "name", "title", default="?")
-    seasons, _ = get_all_try([
-        (f"/competitions/{comp_id}/seasons", None),
-        ("/seasons", {"competition_id": comp_id}),
-    ])
-    season = next(
-        (s for s in seasons if pick(s, "is_current", "current") is True),
-        None,
-    ) or next((s for s in seasons if "2026" in str(pick(s, "year", "name", "label", default=""))), None)
-    if not season:
-        raise StatsApiError("no current/2026 season for the World Cup")
-    season_id = str(pick(season, "id", "season_id"))
-    print(f"[statsapi] resolved WC: comp={comp_name!r} id={comp_id} season_id={season_id} "
-          f"(from {len(wc_like)} world-cup-like competitions)")
+    # current_season_id is on the competition detail object (no seasons-list endpoint)
+    detail = get(f"/competitions/{comp_id}")
+    cdata = detail.get("data") if isinstance(detail, dict) else None
+    season_id = str(pick(cdata or {}, "current_season_id", "season_id", default="") or "")
+    if not season_id:
+        raise StatsApiError(f"competition {comp_id} ({comp_name}) has no current_season_id")
+    print(f"[statsapi] resolved WC: comp={comp_name!r} id={comp_id} season_id={season_id}")
     cache.set("statsapi:wc_season", {"competition_id": comp_id, "season_id": season_id}, 86400)
     return comp_id, season_id

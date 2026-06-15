@@ -20,6 +20,8 @@ from .db import chunked, sb
 from .statsapi import as_list, pick
 
 CORNER_LINES = {8.5: "corners_o85", 9.5: "corners_o95", 10.5: "corners_o105"}
+# documented match_corners line keys -> our market keys
+CORNER_KEYS = {"over_8_5": "corners_o85", "over_9_5": "corners_o95", "over_10_5": "corners_o105"}
 
 
 def _now():
@@ -59,7 +61,9 @@ def probe_odds() -> bool:
         headers={"Authorization": f"Bearer {config.STATSAPI_KEY}"},
         timeout=30,
     )
-    available = r.status_code == 200 and bool(as_list(r.json() if r.ok else [], "odds", "bookmakers"))
+    body = r.json() if r.ok else {}
+    bms = (body.get("data", {}) if isinstance(body, dict) else {}).get("bookmakers")
+    available = r.status_code == 200 and bool(bms)
     ops.set_status("statsapi_odds", {
         "available": available,
         "status_code": r.status_code,
@@ -70,54 +74,57 @@ def probe_odds() -> bool:
     return available
 
 
-def _odds_rows(fixture_id: int, payload) -> list[dict]:
+def _price(node) -> float | None:
+    """A market entry is {'opening': '2.10', 'last_seen': '2.05'} — take the
+    freshest (last_seen) price, falling back to opening."""
+    if not isinstance(node, dict):
+        return None
+    v = node.get("last_seen") if node.get("last_seen") is not None else node.get("opening")
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _odds_rows(fixture_id: int, data) -> list[dict]:
+    """Parse the documented odds shape: data.bookmakers[].markets.{match_odds,
+    total_goals.over_2_5, match_corners.over_9_5, btts}.<sel>.{opening,last_seen}."""
     rows = []
     now = _now()
-    for bm in as_list(payload, "odds", "bookmakers"):
+
+    def add(bm_name, market, selection, node):
+        p = _price(node)
+        if p is not None:
+            rows.append({
+                "fixture_id": fixture_id, "bookmaker": bm_name, "market": market,
+                "selection": selection, "decimal_odds": p, "fetched_at": now, "source": "statsapi",
+            })
+
+    for bm in as_list(data, "bookmakers"):
         bm_name = str(pick(bm, "bookmaker", "name", "key", default="statsapi"))
-        # ONE phase per bookmaker, freshest first: mixing opening/closing/current
-        # rows under one fetched_at would let stale opening prices contaminate
-        # the "latest" median that the de-vig consumes.
-        for phase in ("current", "closing", "opening"):
-            block = bm.get(phase) if isinstance(bm.get(phase), (dict, list)) else None
-            markets = as_list(block or bm, "markets")
-            for mkt in markets:
-                mname = str(pick(mkt, "key", "name", "market", default="")).lower()
-                outcomes = as_list(pick(mkt, "outcomes", "odds", default=[]), "outcomes")
-                if any(k in mname for k in ("1x2", "result", "winner", "h2h")):
-                    for o in outcomes:
-                        sel = str(pick(o, "name", "selection", default="")).lower()
-                        sel = {"1": "home", "x": "draw", "2": "away"}.get(sel, sel)
-                        if sel in ("home", "draw", "away") and pick(o, "price", "odds") is not None:
-                            rows.append({
-                                "fixture_id": fixture_id,
-                                "bookmaker": bm_name,
-                                "market": "h2h",
-                                "selection": sel,
-                                "decimal_odds": pick(o, "price", "odds"),
-                                "fetched_at": now,
-                                "source": "statsapi",
-                            })
-                elif "corner" in mname:
-                    for o in outcomes:
-                        line = pick(o, "line", "handicap", "point")
-                        sel = str(pick(o, "name", "selection", default="")).lower()
-                        try:
-                            market_key = CORNER_LINES.get(float(line))
-                        except (TypeError, ValueError):
-                            market_key = None
-                        if market_key and sel in ("over", "under") and pick(o, "price", "odds") is not None:
-                            rows.append({
-                                "fixture_id": fixture_id,
-                                "bookmaker": bm_name,
-                                "market": market_key,
-                                "selection": sel,
-                                "decimal_odds": pick(o, "price", "odds"),
-                                "fetched_at": now,
-                                "source": "statsapi",
-                            })
-            if markets:
-                break  # freshest phase found (or payload wasn't phase-split)
+        markets = bm.get("markets") if isinstance(bm, dict) else None
+        if not isinstance(markets, dict):
+            continue
+        mo = markets.get("match_odds")
+        if isinstance(mo, dict):
+            for sel in ("home", "draw", "away"):
+                add(bm_name, "h2h", sel, mo.get(sel))
+        tg = markets.get("total_goals")
+        if isinstance(tg, dict) and isinstance(tg.get("over_2_5"), dict):
+            add(bm_name, "ou25", "over", tg["over_2_5"].get("over"))
+            add(bm_name, "ou25", "under", tg["over_2_5"].get("under"))
+        mc = markets.get("match_corners")
+        if isinstance(mc, dict):
+            for line_key, market in CORNER_KEYS.items():
+                node = mc.get(line_key)
+                if isinstance(node, dict):
+                    add(bm_name, market, "over", node.get("over"))
+                    add(bm_name, market, "under", node.get("under"))
+        btts = markets.get("btts")
+        if isinstance(btts, dict):
+            for sel in ("yes", "no"):
+                add(bm_name, "btts", sel, btts.get(sel))
+    return rows
 
 
 def ingest_match_odds():
@@ -140,7 +147,8 @@ def ingest_match_odds():
         except Exception as e:
             print(f"[statsapi_extra] odds fetch failed for fixture {f['id']}: {e}")
             continue
-        rows.extend(_odds_rows(f["id"], payload))
+        data = payload.get("data", payload) if isinstance(payload, dict) else payload
+        rows.extend(_odds_rows(f["id"], data))
     for batch in chunked(rows):
         sb().table("odds_snapshots").insert(batch).execute()
     print(f"[statsapi_extra] appended {len(rows)} statsapi odds rows")

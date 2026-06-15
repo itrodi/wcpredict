@@ -16,8 +16,8 @@ without code changes.
 | `aliases.py` | shared | `slugify()` + cross-vendor name alias dict |
 | `ingest_fd.py` | A | football-data.org `WC` matches → teams, fixtures, `xmap.fd_id` |
 | `ingest_odds.py` | shared | The Odds API bulk h2h (+optional totals) → `odds_snapshots`; kickoff-aware credit budget; snapshot pruning |
-| `statsapi.py` | B | TheStatsAPI HTTP client: bearer auth, 0.5s spacing, defensive `pick()` field access |
-| `ingest_statsapi.py` | B | identity resolution → `xmap`, match_stats (xG/corners), lineups, payload pruning |
+| `statsapi.py` | B | TheStatsAPI HTTP client: bearer auth, 0.5s spacing, `get_all` pagination, WC competition→`current_season_id` resolution |
+| `ingest_statsapi.py` | B | identity resolution → `xmap`, match_stats (npxG/corners/shots), payload pruning |
 | `ratings.py` | A | results-Elo on `teams.elo` (`fixtures.elo_applied`) |
 | `ratings_xg.py` | B | xG-adjusted Elo on `teams.elo_xg` (`fixtures.elo_xg_applied`) |
 | `match_model.py` | A | Elo→Poisson grid → 1x2/ou25/btts/cs + de-vig edge |
@@ -34,6 +34,30 @@ without code changes.
 | `ingest_statsapi_extra.py` | B | §5.0 odds probe/ingest, shotmaps, player stats + lineup strength |
 | `signals.py` | B | derived team + referee signals (display/rationale only, never model inputs) |
 | `picks.py` | shared | rule-generated, immutable, publicly settled picks (after compare) |
+
+## TheStatsAPI integration (v4.5 — verified against the official reference)
+
+- **Base** `https://api.thestatsapi.com/api/football`, bearer auth. Resources are
+  flat, filtered collections — list/JSON are wrapped `{ "data": …, "meta": … }`.
+- **WC resolution**: `GET /competitions?search=FIFA World Cup` → the men's senior
+  competition → `GET /competitions/{id}` → `current_season_id` (there is **no**
+  `/seasons` list endpoint).
+- **Matches**: `GET /matches?competition_id={c}&season_id={s}&per_page=100`
+  (NOT a nested `/competitions/{c}/seasons/{s}/matches` path — that 404s).
+- **Match stats** (`/matches/{id}/stats`) are nested by category with home/away
+  inside each stat and an `all`/`first_half`/`second_half` split, e.g.
+  `data.attack.corners.all.home`, `data.shots.total.all.home`,
+  `data.np_expected_goals.all.home`. `_stat_rows` flattens this into per-team,
+  per-period `match_stats` rows. Only **non-penalty xG** is provided, so it
+  doubles as the `xg` signal the models consume.
+- **No lineups endpoint exists** on this API (only post-match `player-stats`), so
+  confirmed-XI / key-absence ingestion is not attempted — the picks engine's
+  lineup suppression stays dormant.
+- **Odds** (`/matches/{id}/odds`, gated by `odds_available` within 6 days of
+  kick-off): `data.bookmakers[].markets.{match_odds, total_goals.over_2_5,
+  match_corners.over_9_5, btts}.<sel>.{opening,last_seen}` — parsed into
+  `odds_snapshots` with `source='statsapi'` (gives corners a book price → corners
+  value/CLV when the plan includes odds).
 
 ## v4.1 data-correctness disciplines
 

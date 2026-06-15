@@ -185,6 +185,31 @@ def main():
     check("btts yes with no book -> model banker (overs)",
           len(c) == 1 and c[0]["tier"] == "banker" and c[0]["category"] == "overs")
 
+    print("== StatsAPI stats payload parsing (documented shape) ==")
+    from .ingest_statsapi import _stat_rows
+    sample = {
+        "match_id": "mt_1",
+        "overview": {"possession": {"all": {"home": 54, "away": 46}},
+                     "fouls": {"all": {"home": 11, "away": 13}}},
+        "shots": {"total": {"all": {"home": 14, "away": 9}},
+                  "on_target": {"all": {"home": 6, "away": 4}}},
+        "attack": {"corners": {"all": {"home": 7, "away": 3}}},
+        "passes": {"total": {"all": {"home": 512, "away": 438}}},
+        "np_expected_goals": {"all": {"home": 1.82, "away": 0.94},
+                              "first_half": {"home": 0.76, "away": 0.41},
+                              "second_half": {"home": 1.06, "away": 0.53}},
+    }
+    srows = {(r["team_id"], r["period"]): r for r in _stat_rows(99, sample, 10, 20)}
+    check("FT corners parsed home/away", srows[(10, "FT")]["corners"] == 7 and srows[(20, "FT")]["corners"] == 3)
+    check("FT shots parsed", srows[(10, "FT")]["shots"] == 14 and srows[(20, "FT")]["shots"] == 9)
+    check("npxG used as the xg signal", abs(srows[(10, "FT")]["xg"] - 1.82) < 1e-9
+          and abs(srows[(10, "FT")]["npxg"] - 1.82) < 1e-9)
+    check("possession + fouls parsed", srows[(10, "FT")]["possession"] == 54 and srows[(10, "FT")]["fouls"] == 11)
+    check("is_home flag correct", srows[(10, "FT")]["is_home"] is True and srows[(20, "FT")]["is_home"] is False)
+    check("half-period kept when xg present", abs(srows[(10, "1H")]["xg"] - 0.76) < 1e-9)
+    check("absent half stat is None", srows[(10, "1H")]["corners"] is None)
+    check("no mapped team -> no rows", _stat_rows(99, sample, None, None) == [])
+
     print("== Ratings ==")
     check("Elo expectancy at 0 is 0.5", abs(_expected(0) - 0.5) < 1e-12)
     check("Elo expectancy monotone", _expected(200) > _expected(100) > _expected(0))
