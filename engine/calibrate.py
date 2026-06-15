@@ -38,7 +38,10 @@ def _history(comp_id: str, years: tuple[str, ...]) -> list[dict]:
         if not sid:
             print(f"[calibrate] no season for {year}")
             continue
-        matches = statsapi.get_all(f"/competitions/{comp_id}/seasons/{sid}/matches", ttl=86400 * 30)
+        # flat matches collection (per TheStatsAPI docs), not a nested season path
+        matches = statsapi.get_all(
+            "/matches", params={"competition_id": comp_id, "season_id": sid}, ttl=86400 * 30
+        )
         for m in matches:
             if str(pick(m, "status", "state", default="")).lower() not in {"finished", "ft", "full_time", "ended"}:
                 continue

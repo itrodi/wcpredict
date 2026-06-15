@@ -66,18 +66,19 @@ def _resolve_team_ids(api_teams: list[dict]) -> tuple[dict[str, int], list[str]]
 
 
 def _season_matches(comp_id: str, season_id: str) -> list[dict]:
-    """Season fixtures, resilient to the vendor moving/renaming the endpoint.
+    """Season fixtures via TheStatsAPI's flat matches collection.
 
-    The canonical nested path is tried first; if every shape 404s, the cached
-    competition/season is likely stale or wrong, so we bust the cache (forcing a
-    fresh resolve next run) and return [] rather than crashing the whole stage."""
+    Per the API docs the correct shape is
+        GET /football/matches?competition_id={c}&season_id={s}&per_page=100
+    (a top-level filtered collection), NOT a nested
+        /competitions/{c}/seasons/{s}/matches
+    path — the latter 404s. The nested shape is kept only as a defensive
+    fallback in case the API ever changes. If every shape fails the cached
+    competition/season may be stale, so we bust the cache and return []."""
     candidates = [
-        (f"/competitions/{comp_id}/seasons/{season_id}/matches", None),
-        (f"/seasons/{season_id}/matches", None),
-        (f"/competitions/{comp_id}/matches", {"season_id": season_id}),
-        (f"/competitions/{comp_id}/matches", {"season": season_id}),
-        (f"/seasons/{season_id}/fixtures", None),
         ("/matches", {"competition_id": comp_id, "season_id": season_id}),
+        (f"/competitions/{comp_id}/seasons/{season_id}/matches", None),
+        (f"/competitions/{comp_id}/matches", {"season_id": season_id}),
     ]
     items, path = statsapi.get_all_try(candidates)
     if path:

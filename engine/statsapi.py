@@ -140,7 +140,10 @@ def find_world_cup_season(force: bool = False) -> tuple[str, str]:
         raise StatsApiError("men's FIFA World Cup not found in /competitions")
     comp_id = str(pick(wc, "id", "competition_id"))
     comp_name = pick(wc, "name", "title", default="?")
-    seasons = get_all(f"/competitions/{comp_id}/seasons")
+    seasons, _ = get_all_try([
+        (f"/competitions/{comp_id}/seasons", None),
+        ("/seasons", {"competition_id": comp_id}),
+    ])
     season = next(
         (s for s in seasons if pick(s, "is_current", "current") is True),
         None,
