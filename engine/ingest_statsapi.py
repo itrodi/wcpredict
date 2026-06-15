@@ -7,7 +7,7 @@ Fixtures map by (home, away, kickoff ±3h) and persist into xmap_fixtures.
 """
 from datetime import datetime, timedelta, timezone
 
-from . import config, ops, statsapi
+from . import cache, config, ops, statsapi
 from .aliases import slugify
 from .db import chunked, sb
 from .statsapi import as_list, pick
@@ -66,8 +66,28 @@ def _resolve_team_ids(api_teams: list[dict]) -> tuple[dict[str, int], list[str]]
 
 
 def _season_matches(comp_id: str, season_id: str) -> list[dict]:
-    # paginated (spec v4.1 §1.1) — a plain get() truncates at the default page size
-    return statsapi.get_all(f"/competitions/{comp_id}/seasons/{season_id}/matches")
+    """Season fixtures via TheStatsAPI's flat matches collection.
+
+    Per the API docs the correct shape is
+        GET /football/matches?competition_id={c}&season_id={s}&per_page=100
+    (a top-level filtered collection), NOT a nested
+        /competitions/{c}/seasons/{s}/matches
+    path — the latter 404s. The nested shape is kept only as a defensive
+    fallback in case the API ever changes. If every shape fails the cached
+    competition/season may be stale, so we bust the cache and return []."""
+    candidates = [
+        ("/matches", {"competition_id": comp_id, "season_id": season_id}),
+        (f"/competitions/{comp_id}/seasons/{season_id}/matches", None),
+        (f"/competitions/{comp_id}/matches", {"season_id": season_id}),
+    ]
+    items, path = statsapi.get_all_try(candidates)
+    if path:
+        print(f"[ingest_statsapi] matches via {path} -> {len(items)}")
+        return items
+    print(f"[ingest_statsapi] NO working matches endpoint for comp={comp_id} season={season_id} "
+          f"— busting wc_season cache so the next run re-resolves the competition")
+    cache.set("statsapi:wc_season", {}, 0)
+    return []
 
 
 def _map_fixtures(matches: list[dict], team_map: dict[str, int]) -> dict[str, int]:
@@ -128,40 +148,64 @@ def _map_fixtures(matches: list[dict], team_map: dict[str, int]) -> dict[str, in
     return mapped
 
 
-def _stat_rows(fixture_id: int, match_payload: dict, team_map: dict[str, int]) -> list[dict]:
-    """Flatten a /matches/{id}/stats payload into match_stats rows (FT + 1H when present)."""
+_PERIODS = (("all", "FT"), ("first_half", "1H"), ("second_half", "2H"))
+
+
+def _stat_at(data: dict, path: tuple, period: str, side: str):
+    """Navigate the documented stats shape data.<category>.<stat>.<period>.<home|away>."""
+    node = data
+    for key in path:
+        node = node.get(key) if isinstance(node, dict) else None
+        if node is None:
+            return None
+    pnode = node.get(period) if isinstance(node, dict) else None
+    return pnode.get(side) if isinstance(pnode, dict) else None
+
+
+def _stat_rows(fixture_id: int, data: dict, home_team_id, away_team_id) -> list[dict]:
+    """Flatten a /matches/{id}/stats payload into match_stats rows.
+
+    The payload is nested by category with home/away inside each stat and a
+    per-period split, e.g.:
+        data.attack.corners.all.home          -> corners (FT)
+        data.shots.total.first_half.away       -> shots (1H)
+        data.np_expected_goals.all.home        -> npxG (FT)
+    There are no team ids in the stats payload, so the caller passes the mapped
+    home/away team ids. Only non-penalty xG is provided, so it doubles as the xG
+    signal the models consume."""
+    if not isinstance(data, dict):
+        return []
     rows = []
-    sides = as_list(pick(match_payload, "stats", "statistics", "teams", default=match_payload), "stats")
-    for side in sides:
-        sid = str(pick(side, "team_id", "id"))
-        team_id = team_map.get(sid)
+    now = _now()
+    metrics = ("shots", "shots_on_target", "corners", "possession", "xg", "fouls",
+               "yellows", "reds", "passes")
+    for side, team_id in (("home", home_team_id), ("away", away_team_id)):
         if team_id is None:
             continue
-        periods = {"FT": side}
-        for pkey, plabel in (("first_half", "1H"), ("1h", "1H"), ("second_half", "2H"), ("2h", "2H")):
-            if isinstance(side.get(pkey), dict):
-                periods[plabel] = side[pkey]
-        for plabel, src in periods.items():
-            rows.append(
-                {
-                    "fixture_id": fixture_id,
-                    "team_id": team_id,
-                    "is_home": bool(pick(side, "is_home", "home", default=False)),
-                    "period": plabel,
-                    "shots": pick(src, "shots", "shots_total"),
-                    "shots_on_target": pick(src, "shots_on_target", "shots_on_goal"),
-                    "corners": pick(src, "corners", "corner_kicks"),
-                    "possession": pick(src, "possession", "possession_pct"),
-                    "xg": pick(src, "xg", "expected_goals"),
-                    "npxg": pick(src, "npxg", "non_penalty_xg"),
-                    "fouls": pick(src, "fouls"),
-                    "yellows": pick(src, "yellows", "yellow_cards"),
-                    "reds": pick(src, "reds", "red_cards"),
-                    "passes": pick(src, "passes", "passes_total"),
-                    "source_payload": side if plabel == "FT" else None,
-                    "fetched_at": _now(),
-                }
-            )
+        for period, label in _PERIODS:
+            npxg = _stat_at(data, ("np_expected_goals",), period, side)
+            row = {
+                "fixture_id": fixture_id,
+                "team_id": team_id,
+                "is_home": side == "home",
+                "period": label,
+                "shots": _stat_at(data, ("shots", "total"), period, side),
+                "shots_on_target": _stat_at(data, ("shots", "on_target"), period, side),
+                "corners": _stat_at(data, ("attack", "corners"), period, side),
+                "possession": _stat_at(data, ("overview", "possession"), period, side),
+                "xg": npxg,
+                "npxg": npxg,
+                "fouls": _stat_at(data, ("overview", "fouls"), period, side),
+                "yellows": _stat_at(data, ("overview", "yellow_cards"), period, side),
+                "reds": _stat_at(data, ("overview", "red_cards"), period, side),
+                "passes": _stat_at(data, ("passes", "total"), period, side),
+                "source_payload": data if label == "FT" else None,
+                "fetched_at": now,
+            }
+            # keep FT always; skip half-period rows the API didn't populate
+            if label != "FT" and all(row[m] is None for m in metrics):
+                continue
+            rows.append(row)
     return rows
 
 
@@ -194,23 +238,21 @@ def run():
         print(f"[ingest_statsapi] ERROR: only {len(matches)} season matches — "
               f"expected ~{ops.EXPECTED_FIXTURES}; check pagination / season id")
 
-    # referee context (spec v4.1 §5.4) — patch mapped fixtures that lack one
-    ref_patches = 0
+    # home/away OUR-team-id per statsapi match id (the stats payload has no team
+    # ids — home/away are keys inside each stat)
+    match_sides: dict[str, tuple] = {}
     for m in matches:
         mid = str(pick(m, "id", "match_id"))
-        ref = pick(m, "referee", "referee_name")
-        if isinstance(ref, dict):
-            ref = pick(ref, "name")
-        if ref and mid in fixture_map:
-            sb().table("fixtures").update({"referee": str(ref)}).eq(
-                "id", fixture_map[mid]
-            ).is_("referee", "null").execute()
-            ref_patches += 1
-    if ref_patches:
-        print(f"[ingest_statsapi] referee recorded for {ref_patches} fixtures")
+        home = pick(m, "home_team", "homeTeam", default={}) or {}
+        away = pick(m, "away_team", "awayTeam", default={}) or {}
+        match_sides[mid] = (
+            team_map.get(str(pick(home, "id", "team_id"))),
+            team_map.get(str(pick(away, "id", "team_id"))),
+        )
 
     # ---- match stats (xG, corners, shots) for finished + live mapped fixtures ----
-    finished_states = {"finished", "ft", "full_time", "ended", "live", "in_play"}
+    live_states = {"live", "in_play"}
+    finished_states = {"finished", "ft", "full_time", "ended"} | live_states
     want_stats = [
         m for m in matches
         if str(pick(m, "status", "state", default="")).lower() in finished_states
@@ -224,7 +266,7 @@ def run():
     for m in want_stats:
         mid = str(pick(m, "id", "match_id"))
         fixture_id = fixture_map[mid]
-        is_live = str(pick(m, "status", "state", default="")).lower() in {"live", "in_play"}
+        is_live = str(pick(m, "status", "state", default="")).lower() in live_states
         if not is_live and (fixture_id, "FT") in have:
             continue  # finalized stats already stored
         try:
@@ -232,47 +274,16 @@ def run():
         except Exception as e:
             print(f"[ingest_statsapi] stats fetch failed for match {mid}: {e}")
             continue
-        rows = _stat_rows(fixture_id, payload, team_map)
+        data = payload.get("data", payload) if isinstance(payload, dict) else payload
+        home_tid, away_tid = match_sides.get(mid, (None, None))
+        rows = _stat_rows(fixture_id, data, home_tid, away_tid)
         if rows:
             sb().table("match_stats").upsert(rows, on_conflict="fixture_id,team_id,period").execute()
             n_stats += len(rows)
     print(f"[ingest_statsapi] upserted {n_stats} match_stats rows")
-
-    # ---- lineups for fixtures within the next 48h or live ----
-    now = datetime.now(timezone.utc)
-    soon = [
-        m for m in matches
-        if str(pick(m, "id", "match_id")) in fixture_map
-        and (ko := _parse_dt(pick(m, "kickoff", "utc_date", "date", "start_time"))) is not None
-        and -timedelta(hours=3) <= ko - now <= timedelta(hours=48)
-    ]
-    n_lineups = 0
-    for m in soon:
-        mid = str(pick(m, "id", "match_id"))
-        try:
-            payload = statsapi.get(f"/matches/{mid}/lineups", ttl=600)
-        except Exception as e:
-            print(f"[ingest_statsapi] lineups fetch failed for match {mid}: {e}")
-            continue
-        for side in as_list(pick(payload, "lineups", default=payload), "lineups"):
-            team_id = team_map.get(str(pick(side, "team_id", "id")))
-            starters = pick(side, "starters", "starting_xi", "startXI", default=[])
-            if team_id is None or not starters:
-                continue
-            sb().table("lineups").upsert(
-                {
-                    "fixture_id": fixture_map[mid],
-                    "team_id": team_id,
-                    "formation": pick(side, "formation"),
-                    "starters": starters,
-                    "bench": pick(side, "bench", "substitutes"),
-                    "confirmed": bool(pick(side, "confirmed", "is_confirmed", default=False)),
-                    "fetched_at": _now(),
-                },
-                on_conflict="fixture_id,team_id",
-            ).execute()
-            n_lineups += 1
-    print(f"[ingest_statsapi] upserted {n_lineups} lineups")
+    # NOTE: TheStatsAPI exposes no pre-match lineup endpoint (only post-match
+    # player-stats), so confirmed-XI / key-absence ingestion is intentionally not
+    # attempted here — the picks engine's lineup suppression simply stays dormant.
 
 
 def prune_payloads():

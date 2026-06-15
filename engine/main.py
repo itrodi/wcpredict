@@ -38,6 +38,41 @@ def _stage(name, fn):
         return None
 
 
+def _census():
+    """Print the real state of the DB the engine is actually connected to, so a
+    project/database mismatch (engine writes here, migrations/frontend point
+    elsewhere) is obvious from the worker log."""
+    from urllib.parse import urlparse
+
+    from .db import sb
+
+    host = urlparse(config.SUPABASE_URL).netloc or "(unset)"
+    print(f"[census] connected Supabase project: {host}")
+
+    def count(table, **eq):
+        try:
+            q = sb().table(table).select("*", count="exact", head=True)
+            for k, v in eq.items():
+                q = q.eq(k, v)
+            return q.execute().count
+        except Exception as e:
+            return f"ERR({type(e).__name__})"
+
+    print(f"[census] fixtures={count('fixtures')} "
+          f"match_predictions={count('match_predictions')}")
+    print(f"[census] statsapi corners_o95/over rows={count('match_predictions', pipeline='statsapi', market='corners_o95', selection='over')} "
+          f"statsapi ou25/over rows={count('match_predictions', pipeline='statsapi', market='ou25', selection='over')}")
+    print(f"[census] picks total={count('picks')} bankers={count('picks', tier='banker')} value={count('picks', tier='value')}")
+    # markets actually present on live (non-retired, unsettled) picks
+    try:
+        live = sb().table("picks").select("market").is_("retired_at", "null").is_("outcome", "null").execute().data
+        from collections import Counter
+        spread = dict(Counter(p["market"] for p in live))
+        print(f"[census] live pick markets: {spread or '(none)'}")
+    except Exception as e:
+        print(f"[census] live pick markets: ERR({type(e).__name__})")
+
+
 def main():
     statsapi_enabled = bool(config.STATSAPI_KEY)
     if not statsapi_enabled:
@@ -105,6 +140,7 @@ def main():
     _stage("last_refresh", lambda: ops.set_status(
         "last_refresh", {"at": datetime.now(timezone.utc).isoformat()}
     ))
+    _stage("census", _census)
     print("[main] run complete")
 
 

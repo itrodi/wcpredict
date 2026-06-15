@@ -147,6 +147,17 @@ def main():
     by_low = probs(corners_markets(lam_h0, lam_a0, 0.0, fixture_corner_ctx(low, 1, 2, lam_h0, lam_a0)))
     check("low-pace teams suppress corners overs",
           by_low["corners_o95"]["over"] < by_def["corners_o95"]["over"])
+    # shot-informed prior: with NO corner signals, a heavy-shooting team still
+    # gets a higher corner line than a low-shooting one (shots inform the prior)
+    shot_model = {"league_team": 5.0, "k": 9.0, "sig": {},
+                  "corner_per_shot": 0.4, "team_shot_avg": {1: 16.0, 2: 16.0}}
+    quiet_model = {"league_team": 5.0, "k": 9.0, "sig": {},
+                   "corner_per_shot": 0.4, "team_shot_avg": {1: 8.0, 2: 8.0}}
+    ctx_shooty = fixture_corner_ctx(shot_model, 1, 2, lam_h0, lam_a0)
+    ctx_quiet = fixture_corner_ctx(quiet_model, 1, 2, lam_h0, lam_a0)
+    check("shot volume informs the corner prior (no corner data)",
+          ctx_shooty["mu_h"] > ctx_quiet["mu_h"],
+          f"shooty_mu={ctx_shooty['mu_h']:.2f} quiet_mu={ctx_quiet['mu_h']:.2f}")
 
     print("== Picks candidate classification ==")
     from .picks import _candidate_tiers
@@ -173,6 +184,31 @@ def main():
     c = _candidate_tiers(mkrow(market="btts", selection="yes", probability=0.64), cal)
     check("btts yes with no book -> model banker (overs)",
           len(c) == 1 and c[0]["tier"] == "banker" and c[0]["category"] == "overs")
+
+    print("== StatsAPI stats payload parsing (documented shape) ==")
+    from .ingest_statsapi import _stat_rows
+    sample = {
+        "match_id": "mt_1",
+        "overview": {"possession": {"all": {"home": 54, "away": 46}},
+                     "fouls": {"all": {"home": 11, "away": 13}}},
+        "shots": {"total": {"all": {"home": 14, "away": 9}},
+                  "on_target": {"all": {"home": 6, "away": 4}}},
+        "attack": {"corners": {"all": {"home": 7, "away": 3}}},
+        "passes": {"total": {"all": {"home": 512, "away": 438}}},
+        "np_expected_goals": {"all": {"home": 1.82, "away": 0.94},
+                              "first_half": {"home": 0.76, "away": 0.41},
+                              "second_half": {"home": 1.06, "away": 0.53}},
+    }
+    srows = {(r["team_id"], r["period"]): r for r in _stat_rows(99, sample, 10, 20)}
+    check("FT corners parsed home/away", srows[(10, "FT")]["corners"] == 7 and srows[(20, "FT")]["corners"] == 3)
+    check("FT shots parsed", srows[(10, "FT")]["shots"] == 14 and srows[(20, "FT")]["shots"] == 9)
+    check("npxG used as the xg signal", abs(srows[(10, "FT")]["xg"] - 1.82) < 1e-9
+          and abs(srows[(10, "FT")]["npxg"] - 1.82) < 1e-9)
+    check("possession + fouls parsed", srows[(10, "FT")]["possession"] == 54 and srows[(10, "FT")]["fouls"] == 11)
+    check("is_home flag correct", srows[(10, "FT")]["is_home"] is True and srows[(20, "FT")]["is_home"] is False)
+    check("half-period kept when xg present", abs(srows[(10, "1H")]["xg"] - 0.76) < 1e-9)
+    check("absent half stat is None", srows[(10, "1H")]["corners"] is None)
+    check("no mapped team -> no rows", _stat_rows(99, sample, None, None) == [])
 
     print("== Ratings ==")
     check("Elo expectancy at 0 is 0.5", abs(_expected(0) - 0.5) < 1e-12)

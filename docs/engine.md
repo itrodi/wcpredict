@@ -16,8 +16,8 @@ without code changes.
 | `aliases.py` | shared | `slugify()` + cross-vendor name alias dict |
 | `ingest_fd.py` | A | football-data.org `WC` matches → teams, fixtures, `xmap.fd_id` |
 | `ingest_odds.py` | shared | The Odds API bulk h2h (+optional totals) → `odds_snapshots`; kickoff-aware credit budget; snapshot pruning |
-| `statsapi.py` | B | TheStatsAPI HTTP client: bearer auth, 0.5s spacing, defensive `pick()` field access |
-| `ingest_statsapi.py` | B | identity resolution → `xmap`, match_stats (xG/corners), lineups, payload pruning |
+| `statsapi.py` | B | TheStatsAPI HTTP client: bearer auth, 0.5s spacing, `get_all` pagination, WC competition→`current_season_id` resolution |
+| `ingest_statsapi.py` | B | identity resolution → `xmap`, match_stats (npxG/corners/shots), payload pruning |
 | `ratings.py` | A | results-Elo on `teams.elo` (`fixtures.elo_applied`) |
 | `ratings_xg.py` | B | xG-adjusted Elo on `teams.elo_xg` (`fixtures.elo_xg_applied`) |
 | `match_model.py` | A | Elo→Poisson grid → 1x2/ou25/btts/cs + de-vig edge |
@@ -34,6 +34,30 @@ without code changes.
 | `ingest_statsapi_extra.py` | B | §5.0 odds probe/ingest, shotmaps, player stats + lineup strength |
 | `signals.py` | B | derived team + referee signals (display/rationale only, never model inputs) |
 | `picks.py` | shared | rule-generated, immutable, publicly settled picks (after compare) |
+
+## TheStatsAPI integration (v4.5 — verified against the official reference)
+
+- **Base** `https://api.thestatsapi.com/api/football`, bearer auth. Resources are
+  flat, filtered collections — list/JSON are wrapped `{ "data": …, "meta": … }`.
+- **WC resolution**: `GET /competitions?search=FIFA World Cup` → the men's senior
+  competition → `GET /competitions/{id}` → `current_season_id` (there is **no**
+  `/seasons` list endpoint).
+- **Matches**: `GET /matches?competition_id={c}&season_id={s}&per_page=100`
+  (NOT a nested `/competitions/{c}/seasons/{s}/matches` path — that 404s).
+- **Match stats** (`/matches/{id}/stats`) are nested by category with home/away
+  inside each stat and an `all`/`first_half`/`second_half` split, e.g.
+  `data.attack.corners.all.home`, `data.shots.total.all.home`,
+  `data.np_expected_goals.all.home`. `_stat_rows` flattens this into per-team,
+  per-period `match_stats` rows. Only **non-penalty xG** is provided, so it
+  doubles as the `xg` signal the models consume.
+- **No lineups endpoint exists** on this API (only post-match `player-stats`), so
+  confirmed-XI / key-absence ingestion is not attempted — the picks engine's
+  lineup suppression stays dormant.
+- **Odds** (`/matches/{id}/odds`, gated by `odds_available` within 6 days of
+  kick-off): `data.bookmakers[].markets.{match_odds, total_goals.over_2_5,
+  match_corners.over_9_5, btts}.<sel>.{opening,last_seen}` — parsed into
+  `odds_snapshots` with `source='statsapi'` (gives corners a book price → corners
+  value/CLV when the plan includes odds).
 
 ## v4.1 data-correctness disciplines
 
@@ -60,10 +84,18 @@ without code changes.
     succeeds.
   - Caps: ≤2/fixture and ≤`MAX_PER_CATEGORY` per tier **per category**
     (`result` vs `overs`) so overs always get airtime instead of being crowded
-    out by short-priced favourites. Material changes retire-and-republish;
-    `write_db.settle_picks` settles **every** published pick incl. retired ones
-    (corners settle from `match_stats`, 1H markets from the stored HT score) and
-    stamps CLV from `closing_odds`.
+    out by short-priced favourites. Corner banker floors sit lower (≈0.54–0.58)
+    than goals/result because NB-overdispersed corner probabilities compress
+    toward 0.5. Material changes retire-and-republish; `write_db.settle_picks`
+    settles **every** published pick incl. retired ones (corners settle from
+    `match_stats`, 1H markets from the stored HT score) and stamps CLV from
+    `closing_odds`.
+- **Match verdicts** (frontend, `lib/verdicts.ts` + `/picks`): a browse view,
+  separate from the tracked Bankers/Value picks — for every upcoming fixture the
+  model's single strongest call in result / goals / corners plus the dominant
+  pick overall, each with a confidence %. Surfaces a corners read on *every*
+  game even when none clears the banker floor. Pure model projections, not
+  published/settled bets.
 - **Leak plugs** (v4.3): the picks engine suppresses a fixture entirely when a
   confirmed lineup shows ≥2 key absences for any side (rotation — the market
   reprices on the team sheet, an Elo model does not), or `fixture_incentives`
@@ -133,19 +165,24 @@ at the remaining goal share, convolved over one representative half-time
 scoreline per HT outcome (1-0 / 0-0 / 0-1) — its nine probabilities sum to ~1
 within ~2%.
 
-**Corners (negative binomial, NB2)** — team-level attack/defense (v4.4): each
-side's mean is `μ_team = W·(own corner-pace-for) + (1−W)·(opponent's
+**Corners (negative binomial, NB2)** — team-level attack/defense (v4.4, refined
+v4.5): each side's mean is `μ_team = W·(own corner-pace-for) + (1−W)·(opponent's
 corner-pace-against)`, where the rates come from `team_signals` (built from
-`match_stats` corners) and are **empirical-Bayes shrunk** toward the tournament
-mean by a `CORNER_SHRINK_K0`-match pseudo-count — so early on, with little data,
-the line sits near the league average and sharpens as real corners accumulate.
-The pair is then scaled by match tempo `(λ_h+λ_a)/2.6` (clamped) and a small
-strength tilt. `μ_total = μ_home + μ_away`; dispersion `k` is fitted from the
-empirical variance of finished-match total corners (falls back to 9). When no
-corner signals exist yet the model degrades to the old formula
-`μ = 7.0 + 1.1·(λ_h+λ_a) − 0.002·|elo_diff|` split by λ share. Markets: totals
-over/under 8.5 / 9.5 / 10.5; team corners over/under 4.5. **Experimental-badged**
-until `model_scores.n ≥ 30` **and** `beats_baseline`.
+`match_stats` corners) and are **empirical-Bayes shrunk** toward a per-team
+**shot-informed prior** by a `CORNER_SHRINK_K0`-match pseudo-count. The prior is
+`0.5·league_mean + 0.5·(team avg shots × league corners-per-shot)` — shots
+accumulate far faster than a stable corner rate, so a team that is shooting a
+lot is expected to win more corners before its own corner sample is reliable
+(this is what makes corners useful in week one instead of everything shrinking
+to a flat average). The pair is then scaled by match tempo `(λ_h+λ_a)/2.6`
+(clamped) and a small strength tilt. `μ_total = μ_home + μ_away`; dispersion `k`
+is fitted from the empirical variance of finished-match total corners (falls
+back to 9). With no shots the prior is the flat league mean; with no finished
+matches the league mean is the formula's implied average. Markets: totals
+over/under 8.5 / 9.5 / 10.5; team corners over/under 4.5. **As of v4.5 corners
+are a first-class market — no longer experimental-badged** (the model is
+data-driven); they are banker-eligible and, when a book price exists,
+value-eligible without the calibration wait.
 
 ## Blend (`blend-w0.7`)
 

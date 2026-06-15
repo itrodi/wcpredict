@@ -33,7 +33,14 @@ from . import config
 from .db import fetch_all, sb
 
 HORIZON_DAYS = 14
-ALWAYS_CALIBRATED = {"1x2", "ou25", "btts"}
+# corners are now a first-class market (v4.5): the team-level model is data-driven
+# (attack/defense + shot-informed prior), so they're treated as solid rather than
+# experimental — eligible for bankers and (when priced) value, no calibration wait.
+CORNERS_MARKETS = {
+    "corners_o85", "corners_o95", "corners_o105", "corners_1h_o45",
+    "team_corners_home_o45", "team_corners_away_o45",
+}
+ALWAYS_CALIBRATED = {"1x2", "ou25", "btts"} | CORNERS_MARKETS
 BANKER_EDGE_MIN = -0.01            # never banker a selection the market rates materially worse
 VALUE_EDGE_MIN, VALUE_P_MIN = 0.04, 0.25
 MAX_PER_FIXTURE = 2
@@ -55,12 +62,14 @@ OVERS_MARKETS = {
     "team_corners_home_o45", "team_corners_away_o45",
 }
 OVERS_SELECTIONS = {"over", "yes"}     # the "overs" side; unders only ever ride the value tier
-# model-only banker probability floor per market (overdispersed corners sit lower)
+# model-only banker probability floor per market. Corners are overdispersed
+# (NB k≈9), so their over-probabilities compress toward 0.5 — the floors are set
+# lower so a genuinely corner-leaning matchup actually clears the bar.
 BANKER_MARKET_P = {
     "1x2": 0.65,
     "ou25": 0.62, "btts": 0.62, "ou05_1h": 0.66, "ou15_1h": 0.60,
-    "corners_o85": 0.62, "corners_o95": 0.60, "corners_o105": 0.58, "corners_1h_o45": 0.60,
-    "team_corners_home_o45": 0.60, "team_corners_away_o45": 0.60,
+    "corners_o85": 0.58, "corners_o95": 0.56, "corners_o105": 0.54, "corners_1h_o45": 0.57,
+    "team_corners_home_o45": 0.57, "team_corners_away_o45": 0.57,
 }
 BANKER_MODEL_MIN_ODDS = 1.25       # skip trivially short model-only bankers (no book to anchor)
 

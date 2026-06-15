@@ -53,20 +53,34 @@ def nb_pmf_vector(mu: float, k: float, n_max: int = 30) -> np.ndarray:
 
 
 def load_corner_model() -> dict:
-    """Tournament corner baseline + dispersion from finished match_stats, plus
-    per-team shrunken corner-for / corner-against rates (from team_signals).
+    """Tournament corner baseline + dispersion + per-team rates for the corners
+    model. Three data sources, most-abundant-informs-least:
 
-    Early in the tournament there are few finished matches, so the league mean
-    falls back to the formula's implied average and the per-team rates shrink
-    hard toward it — the model degrades gracefully to the old behaviour and
-    sharpens as real corner data accumulates."""
+    - finished-match total corners -> league mean + NB dispersion k
+    - per-team corner-for / corner-against rates (team_signals) -> direct signal
+    - per-team SHOT volume + the league corners-per-shot ratio -> an *informed
+      prior*. Shots accumulate far faster than a stable corner rate, so a team
+      that is shooting a lot is expected to win more corners even before its
+      own corner sample is reliable. This is what makes the model useful in the
+      first week instead of shrinking everything to a flat league average.
+
+    Degrades cleanly: with no shots the prior is the flat league mean; with no
+    finished matches the league mean is the formula's implied average."""
     ms = fetch_all(
-        lambda: sb().table("match_stats").select("fixture_id, corners").eq("period", "FT").order("id")
+        lambda: sb().table("match_stats").select("fixture_id, team_id, corners, shots")
+        .eq("period", "FT").order("id")
     )
     by_fx: dict[int, list[float]] = defaultdict(list)
+    team_shots: dict[int, list[float]] = defaultdict(list)
+    tot_corners = tot_shots = 0.0
     for r in ms:
         if r["corners"] is not None:
             by_fx[r["fixture_id"]].append(float(r["corners"]))
+            if r["shots"] is not None:
+                tot_corners += float(r["corners"])
+                tot_shots += float(r["shots"])
+        if r["shots"] is not None:
+            team_shots[r["team_id"]].append(float(r["shots"]))
     totals = [sum(v) for v in by_fx.values() if len(v) == 2]
     if len(totals) >= 5:
         league_total = float(np.mean(totals))
@@ -77,27 +91,40 @@ def load_corner_model() -> dict:
         # implied mean of the formula at an average-tempo, even match
         league_total = max(6.0, P["CORNERS_A"] + P["CORNERS_B"] * config.TOTAL_GOALS)
         k = float(P["CORNERS_K"])
+    league_team = league_total / 2.0
+    corner_per_shot = (tot_corners / tot_shots) if tot_shots >= 20 else None
+    team_shot_avg = {t: float(np.mean(v)) for t, v in team_shots.items() if v}
     sig = {
         (s["team_id"], s["signal"]): float(s["value"])
         for s in sb().table("team_signals").select("team_id, signal, value")
         .in_("signal", ["corner_pace_for", "corner_pace_against", "corner_games"]).execute().data
     }
-    return {"league_team": league_total / 2.0, "k": k, "sig": sig}
+    return {"league_team": league_team, "k": k, "sig": sig,
+            "corner_per_shot": corner_per_shot, "team_shot_avg": team_shot_avg}
 
 
 def fixture_corner_ctx(model: dict, home_id: int, away_id: int,
                        lam_h: float, lam_a: float) -> dict:
-    """Per-team corner means from the attack/defense decomposition, shrunk to
-    the league prior and tempo/strength adjusted."""
-    prior, sig = model["league_team"], model["sig"]
+    """Per-team corner means from the attack/defense decomposition, each shrunk
+    to a SHOT-informed prior (not a flat league average) and tempo/strength
+    adjusted."""
+    league, sig = model["league_team"], model["sig"]
+    cps, shots_avg = model.get("corner_per_shot"), model.get("team_shot_avg", {})
     k0 = P["CORNER_SHRINK_K0"]
 
+    def prior_for(tid: int) -> float:
+        # blend the flat league mean with the team's shots-implied corner rate
+        if cps and tid in shots_avg:
+            return 0.5 * league + 0.5 * shots_avg[tid] * cps
+        return league
+
     def rate(tid: int, kind: str) -> float:
+        prior = prior_for(tid) if kind == "for" else league
         v = sig.get((tid, f"corner_pace_{kind}"))
         if v is None:
             return prior
         n = sig.get((tid, "corner_games"), 0.0)
-        return (n * v + k0 * prior) / (n + k0)   # empirical-Bayes shrink to the league mean
+        return (n * v + k0 * prior) / (n + k0)   # empirical-Bayes shrink to the informed prior
 
     w = P["CORNER_ATTACK_W"]
     mu_h = w * rate(home_id, "for") + (1 - w) * rate(away_id, "against")
