@@ -7,7 +7,7 @@ Fixtures map by (home, away, kickoff ±3h) and persist into xmap_fixtures.
 """
 from datetime import datetime, timedelta, timezone
 
-from . import config, ops, statsapi
+from . import cache, config, ops, statsapi
 from .aliases import slugify
 from .db import chunked, sb
 from .statsapi import as_list, pick
@@ -66,8 +66,27 @@ def _resolve_team_ids(api_teams: list[dict]) -> tuple[dict[str, int], list[str]]
 
 
 def _season_matches(comp_id: str, season_id: str) -> list[dict]:
-    # paginated (spec v4.1 §1.1) — a plain get() truncates at the default page size
-    return statsapi.get_all(f"/competitions/{comp_id}/seasons/{season_id}/matches")
+    """Season fixtures, resilient to the vendor moving/renaming the endpoint.
+
+    The canonical nested path is tried first; if every shape 404s, the cached
+    competition/season is likely stale or wrong, so we bust the cache (forcing a
+    fresh resolve next run) and return [] rather than crashing the whole stage."""
+    candidates = [
+        (f"/competitions/{comp_id}/seasons/{season_id}/matches", None),
+        (f"/seasons/{season_id}/matches", None),
+        (f"/competitions/{comp_id}/matches", {"season_id": season_id}),
+        (f"/competitions/{comp_id}/matches", {"season": season_id}),
+        (f"/seasons/{season_id}/fixtures", None),
+        ("/matches", {"competition_id": comp_id, "season_id": season_id}),
+    ]
+    items, path = statsapi.get_all_try(candidates)
+    if path:
+        print(f"[ingest_statsapi] matches via {path} -> {len(items)}")
+        return items
+    print(f"[ingest_statsapi] NO working matches endpoint for comp={comp_id} season={season_id} "
+          f"— busting wc_season cache so the next run re-resolves the competition")
+    cache.set("statsapi:wc_season", {}, 0)
+    return []
 
 
 def _map_fixtures(matches: list[dict], team_map: dict[str, int]) -> dict[str, int]:
