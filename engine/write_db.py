@@ -29,10 +29,12 @@ def settle_outcome(market, selection, hg, ag, corners_home=None, corners_away=No
         if went_extra:
             return selection == "draw"
         return {"home": hg > ag, "draw": hg == ag, "away": hg < ag}[selection]
-    if market == "ou25":
+    if market in ("ou15", "ou25", "ou35", "ou45", "ou55"):
         if went_extra:
             return None
-        return (hg + ag >= 3) if selection == "over" else (hg + ag <= 2)
+        line = int(market[2:]) / 10.0   # 'ou35' -> 3.5
+        total = hg + ag
+        return (total > line) if selection == "over" else (total < line)
     if market == "btts":
         if went_extra:
             return None

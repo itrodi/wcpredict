@@ -43,7 +43,11 @@ export const MARKETS: Record<string, MarketDef> = {
     order: 10,
     selectionLabel: (sel) => RESULT_SELECTIONS[sel] ?? cap(sel),
   },
+  ou15: ou("ou15", "Over/Under 1.5 goals", "Goals", 18),
   ou25: ou("ou25", "Over/Under 2.5 goals", "Goals", 20),
+  ou35: ou("ou35", "Over/Under 3.5 goals", "Goals", 22),
+  ou45: ou("ou45", "Over/Under 4.5 goals", "Goals", 24),
+  ou55: ou("ou55", "Over/Under 5.5 goals", "Goals", 26),
   btts: {
     label: "Both teams to score",
     group: "Goals",

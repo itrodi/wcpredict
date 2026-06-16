@@ -36,6 +36,11 @@ TOTAL_GOALS = 2.6           # expected total goals in an EVENLY MATCHED WC game
 LAMBDA_MIN, LAMBDA_MAX = 0.2, 4.0
 GOAL_GRID = 11              # scoreline matrix is 0..10 goals per side
 
+# full-time goal over/under ladder emitted from the scoreline matrix (v4.6):
+# over X.5 = P(total goals >= X+1). Surfaces high-scoring markets (3.5/4.5/5.5)
+# for the goals section, not just 2.5.
+GOAL_LINES = ((1.5, "ou15"), (2.5, "ou25"), (3.5, "ou35"), (4.5, "ou45"), (5.5, "ou55"))
+
 # Monte Carlo
 N_SIMS = 20000
 

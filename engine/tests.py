@@ -79,6 +79,15 @@ def main():
     spread = abs(by_big["ou25"]["over"] - by_even["ou25"]["over"])
     check("over 2.5 VARIES across matchups", spread > 0.03,
           f"even={by_even['ou25']['over']:.3f} big={by_big['ou25']['over']:.3f}")
+    # full goal ladder (v4.6): monotone decreasing over-probability with the line
+    for name, by in (("even", by_even), ("big", by_big)):
+        ladder = [by[k]["over"] for _, k in config.GOAL_LINES]
+        check(f"goal ladder monotone decreasing ({name})",
+              all(ladder[i] >= ladder[i + 1] for i in range(len(ladder) - 1)),
+              " > ".join(f"{x:.2f}" for x in ladder))
+        for _, k in config.GOAL_LINES:
+            check(f"{k} complement ({name})", abs(by[k]["over"] + by[k]["under"] - 1) < 1e-9)
+    check("high-scoring mismatch lifts over 3.5", by_big["ou35"]["over"] > by_even["ou35"]["over"])
     check("bigger mismatch -> more goals -> higher over 2.5",
           by_big["ou25"]["over"] > by_mid["ou25"]["over"] > by_even["ou25"]["over"])
     check("favourite's win prob rises with gap",
@@ -252,6 +261,13 @@ def main():
           and settle_outcome("1x2", "draw", 1, 1) is True)
     check("ou25 settle", settle_outcome("ou25", "over", 2, 1) is True
           and settle_outcome("ou25", "under", 1, 1) is True)
+    check("goal ladder settles by line",
+          settle_outcome("ou35", "over", 2, 2) is True       # 4 > 3.5
+          and settle_outcome("ou35", "under", 2, 1) is True  # 3 < 3.5
+          and settle_outcome("ou55", "over", 4, 2) is True   # 6 > 5.5
+          and settle_outcome("ou15", "under", 1, 0) is True) # 1 < 1.5
+    check("goal ladder unsettleable after extra time",
+          settle_outcome("ou35", "over", 2, 2, duration="EXTRA_TIME") is None)
     check("corners settle with stats", settle_outcome("corners_o95", "over", 1, 0, 6, 5) is True
           and settle_outcome("team_corners_home_o45", "over", 1, 0, 5, 2) is True)
     check("unsettleable markets return None", settle_outcome("corners_o95", "over", 1, 0) is None
