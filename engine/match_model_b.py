@@ -177,14 +177,16 @@ def markets_for_fixture(elo_h: float, elo_a: float, host_home: bool,
     m = dc_scoreline_matrix(lam_h, lam_a, rho)
     home, draw, away = _1x2(m)
     total = np.add.outer(np.arange(config.GOAL_GRID), np.arange(config.GOAL_GRID))
-    over25 = float(m[total >= 3].sum())
     btts = float(m[1:, 1:].sum())
 
     rows = [
         ("1x2", "home", home), ("1x2", "draw", draw), ("1x2", "away", away),
-        ("ou25", "over", over25), ("ou25", "under", 1 - over25),
         ("btts", "yes", btts), ("btts", "no", 1 - btts),
     ]
+    for line, key in config.GOAL_LINES:
+        over = float(m[total >= line + 0.5].sum())
+        rows.append((key, "over", over))
+        rows.append((key, "under", 1 - over))
     cs_covered = 0.0
     for i in range(5):
         for j in range(5):

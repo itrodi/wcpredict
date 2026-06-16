@@ -90,6 +90,11 @@ without code changes.
     settles **every** published pick incl. retired ones (corners settle from
     `match_stats`, 1H markets from the stored HT score) and stamps CLV from
     `closing_odds`.
+- **Goal rush** (frontend, `lib/goals.ts` + `/picks`): upcoming fixtures ranked
+  by how likely they are to be high-scoring, exposing the full over ladder (1.5
+  → 5.5) with a headline "top goals call" (the highest line still ≥ 50%). The
+  goals ladder is pick-eligible too — `ou35` can banker on a clear goal-fest
+  (floor 0.55); `ou45`/`ou55` are shown but essentially never banker.
 - **Match verdicts** (frontend, `lib/verdicts.ts` + `/picks`): a browse view,
   separate from the tracked Bankers/Value picks — for every upcoming fixture the
   model's single strongest call in result / goals / corners plus the dominant
@@ -138,7 +143,8 @@ every totals market (O/U 2.5, 1H totals, the corners mean) constant across
 fixtures — `python -m engine.tests` guards against that regressing.
 
 **Markets** from an 11×11 independent-Poisson scoreline matrix (renormalised):
-1X2, O/U 2.5, BTTS, correct score (0–4 each way + `other`).
+1X2, the full goal over/under ladder (1.5 / 2.5 / 3.5 / 4.5 / 5.5, where
+over X.5 = P(total ≥ X+1)), BTTS, correct score (0–4 each way + `other`).
 
 **Edge**: the latest fetch batch of `odds_snapshots` per fixture → median
 decimal odds per selection across bookmakers → **power de-vig** (`q_i = p_i^k`
@@ -196,7 +202,7 @@ the same `p_market`. Refit of `w` is manual for now (see operations.md).
 | market | selections | pipelines |
 |---|---|---|
 | `1x2` | home, draw, away | free, statsapi, blend_* |
-| `ou25` | over, under | free, statsapi |
+| `ou15` / `ou25` / `ou35` / `ou45` / `ou55` | over, under | free, statsapi |
 | `btts` | yes, no | free, statsapi |
 | `cs` | `0-0`…`4-4`, other | free, statsapi |
 | `ht_1x2` | home, draw, away | statsapi |

@@ -40,7 +40,9 @@ CORNERS_MARKETS = {
     "corners_o85", "corners_o95", "corners_o105", "corners_1h_o45",
     "team_corners_home_o45", "team_corners_away_o45",
 }
-ALWAYS_CALIBRATED = {"1x2", "ou25", "btts"} | CORNERS_MARKETS
+# full goals over/under ladder (v4.6) — same Poisson model as ou25, treated as solid
+GOALS_MARKETS = {"ou15", "ou25", "ou35", "ou45", "ou55", "btts"}
+ALWAYS_CALIBRATED = {"1x2"} | GOALS_MARKETS | CORNERS_MARKETS
 BANKER_EDGE_MIN = -0.01            # never banker a selection the market rates materially worse
 VALUE_EDGE_MIN, VALUE_P_MIN = 0.04, 0.25
 MAX_PER_FIXTURE = 2
@@ -57,7 +59,7 @@ LOW_LEVERAGE = 0.10       # max-min P(advance|result) below this for BOTH teams 
 # banker-eligible (badged experimental in the UI) but never value-eligible —
 # we don't claim value against a price we can't see or a model we haven't proven.
 OVERS_MARKETS = {
-    "ou25", "btts", "ou05_1h", "ou15_1h",
+    "ou15", "ou25", "ou35", "ou45", "ou55", "btts", "ou05_1h", "ou15_1h",
     "corners_o85", "corners_o95", "corners_o105", "corners_1h_o45",
     "team_corners_home_o45", "team_corners_away_o45",
 }
@@ -67,7 +69,10 @@ OVERS_SELECTIONS = {"over", "yes"}     # the "overs" side; unders only ever ride
 # lower so a genuinely corner-leaning matchup actually clears the bar.
 BANKER_MARKET_P = {
     "1x2": 0.65,
-    "ou25": 0.62, "btts": 0.62, "ou05_1h": 0.66, "ou15_1h": 0.60,
+    # goals ladder: higher lines need a lower floor (a 60% over-3.5 is a strong
+    # goal-fest call); over 4.5/5.5 essentially never banker (default 0.65)
+    "ou15": 0.80, "ou25": 0.62, "ou35": 0.55,
+    "btts": 0.62, "ou05_1h": 0.66, "ou15_1h": 0.60,
     "corners_o85": 0.58, "corners_o95": 0.56, "corners_o105": 0.54, "corners_1h_o45": 0.57,
     "team_corners_home_o45": 0.57, "team_corners_away_o45": 0.57,
 }

@@ -45,17 +45,18 @@ def markets_from_matrix(m: np.ndarray) -> list[tuple[str, str, float]]:
     draw = float(np.trace(m))
     away = float(np.triu(m, 1).sum())
     total = np.add.outer(np.arange(config.GOAL_GRID), np.arange(config.GOAL_GRID))
-    over = float(m[total >= 3].sum())
     btts = float(m[1:, 1:].sum())
     rows = [
         ("1x2", "home", home),
         ("1x2", "draw", draw),
         ("1x2", "away", away),
-        ("ou25", "over", over),
-        ("ou25", "under", 1.0 - over),
         ("btts", "yes", btts),
         ("btts", "no", 1.0 - btts),
     ]
+    for line, key in config.GOAL_LINES:
+        over = float(m[total >= line + 0.5].sum())  # over 2.5 -> total >= 3
+        rows.append((key, "over", over))
+        rows.append((key, "under", 1.0 - over))
     cs_covered = 0.0
     for i in range(5):
         for j in range(5):

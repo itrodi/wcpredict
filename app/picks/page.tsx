@@ -1,7 +1,9 @@
 import Link from "next/link";
 
+import GoalRush from "@/components/GoalRush";
 import MatchVerdicts from "@/components/MatchVerdicts";
 import PicksLive from "@/components/PicksLive";
+import { buildGoalRush, type GoalMatch, type GoalRow } from "@/lib/goals";
 import { EXPERIMENTAL_MIN_N } from "@/lib/markets";
 import { resolveView } from "@/lib/pipeline";
 import { supabaseServer } from "@/lib/supabase/server";
@@ -12,6 +14,7 @@ const VERDICT_SELECT =
   "pipeline, market, selection, probability, fixture_id, " +
   "fixtures!inner(kickoff, status, home:teams!fixtures_home_id_fkey(name), away:teams!fixtures_away_id_fkey(name))";
 const VERDICT_MARKETS = ["1x2", "ou25", "corners_o85", "corners_o95", "corners_o105"];
+const GOAL_MARKETS = ["ou15", "ou25", "ou35", "ou45", "ou55"];
 
 export const revalidate = 300;
 
@@ -75,10 +78,13 @@ export default async function PicksPage() {
   let settled: PickRow[] = [];
   let calibrated: string[] = [];
   let verdicts: Verdict[] = [];
+  let goalRush: GoalMatch[] = [];
   if (sb) {
     const view = await resolveView({}, sb);
     const horizon = new Date(Date.now() + 10 * 86400_000).toISOString();
-    const [{ data: l }, { data: s }, { data: scores }, { data: vrows }] = await Promise.all([
+    const now = new Date().toISOString();
+    const [{ data: l }, { data: s }, { data: scores }, { data: vrows }, { data: grows }] =
+      await Promise.all([
       sb
         .from("picks")
         .select(PICK_SELECT)
@@ -96,7 +102,17 @@ export default async function PicksPage() {
         .in("pipeline", [view.blendPipeline, view.modelPipeline])
         .in("market", VERDICT_MARKETS)
         .eq("fixtures.status", "scheduled")
-        .gte("fixtures.kickoff", new Date().toISOString())
+        .gte("fixtures.kickoff", now)
+        .lte("fixtures.kickoff", horizon)
+        .limit(1000),
+      sb
+        .from("match_predictions")
+        .select(VERDICT_SELECT)
+        .eq("pipeline", view.modelPipeline)
+        .in("market", GOAL_MARKETS)
+        .eq("selection", "over")
+        .eq("fixtures.status", "scheduled")
+        .gte("fixtures.kickoff", now)
         .lte("fixtures.kickoff", horizon)
         .limit(1000),
     ]);
@@ -108,6 +124,7 @@ export default async function PicksPage() {
       view.blendPipeline,
       view.modelPipeline
     );
+    goalRush = buildGoalRush((grows as unknown as GoalRow[] | null) ?? []);
   }
 
   const record = trackRecord(settled);
@@ -211,6 +228,18 @@ export default async function PicksPage() {
           </p>
         </div>
         <MatchVerdicts verdicts={verdicts} />
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-lg font-bold text-zinc-100">Goal rush — high-scoring matches</h2>
+          <p className="text-sm text-zinc-500">
+            Upcoming fixtures ranked by how likely they are to be a goal-fest, across the full
+            over/under ladder (1.5 → 5.5). The &ldquo;top goals call&rdquo; is the highest line the
+            model still makes more likely than not. Model projections, not tracked bets.
+          </p>
+        </div>
+        <GoalRush matches={goalRush} />
       </section>
 
       <PicksLive initial={live} calibratedMarkets={calibrated} />
