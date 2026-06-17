@@ -165,6 +165,38 @@ def _latest_devigged_h2h(fixture_ids: list[int]) -> dict[int, dict[str, tuple[fl
     return _latest_devigged(fixture_ids, "h2h", {"home", "draw", "away"})
 
 
+# prediction market -> (odds_snapshots market key, full selection set). A value
+# leg needs a devigged book price to measure edge against, so any market listed
+# here that has ingested odds becomes eligible for Value mode — not just 1X2.
+DEVIG_MARKETS: dict[str, tuple[str, set[str]]] = {
+    "1x2": ("h2h", {"home", "draw", "away"}),
+    "ou15": ("ou15", {"over", "under"}),
+    "ou25": ("ou25", {"over", "under"}),
+    "ou35": ("ou35", {"over", "under"}),
+    "ou45": ("ou45", {"over", "under"}),
+    "ou55": ("ou55", {"over", "under"}),
+    "btts": ("btts", {"yes", "no"}),
+}
+
+
+def devigged_books(fixture_ids: list[int]) -> dict[str, dict[int, dict[str, tuple[float, float]]]]:
+    """prediction market -> fixture_id -> selection -> (odds, devigged_p), for
+    every DEVIG_MARKETS market that has odds. Empty inner dicts cost one cheap
+    query each (no rows -> returns {})."""
+    return {pm: _latest_devigged(fixture_ids, odds_m, sels) for pm, (odds_m, sels) in DEVIG_MARKETS.items()}
+
+
+def apply_book(row: dict, books: dict[str, dict[int, dict[str, tuple[float, float]]]]) -> dict:
+    """Attach market_odds + edge (model p − devigged book p) to a prediction row
+    when a book price exists for its market/selection. Pure; unit-tested."""
+    priced = books.get(row["market"], {}).get(row["fixture_id"])
+    if priced and row["selection"] in priced:
+        med_odds, devig_p = priced[row["selection"]]
+        row["market_odds"] = round(med_odds, 3)
+        row["edge"] = round(row["probability"] - devig_p, 4)
+    return row
+
+
 def run() -> list[dict]:
     """Build match_predictions rows for upcoming fixtures with known teams.
 
@@ -182,8 +214,7 @@ def run() -> list[dict]:
     )
     fixtures = [f for f in fixtures if f["home_id"] and f["away_id"]]
     fids = [f["id"] for f in fixtures]
-    book = _latest_devigged_h2h(fids)
-    book_ou = _latest_devigged(fids, "ou25", {"over", "under"})  # present iff ODDS_MARKETS includes totals
+    books = devigged_books(fids)  # every market with ingested odds → Value-eligible
 
     rows = []
     for f in fixtures:
@@ -205,14 +236,7 @@ def run() -> list[dict]:
                 "edge": None,
                 "model_version": config.MODEL_VERSION,
             }
-            priced = book.get(f["id"]) if market == "1x2" else (
-                book_ou.get(f["id"]) if market == "ou25" else None
-            )
-            if priced:
-                med_odds, devig_p = priced[selection]
-                row["market_odds"] = round(med_odds, 3)
-                row["edge"] = round(p - devig_p, 4)
-            rows.append(row)
+            rows.append(apply_book(row, books))
     print(f"[match_model] {len(rows)} prediction rows for {len(fixtures)} fixtures")
     return rows
 

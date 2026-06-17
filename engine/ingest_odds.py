@@ -22,6 +22,41 @@ def _resolve_slug(name: str, known_slugs: list[str]) -> str | None:
     return close[0] if close else None
 
 
+# The Odds API totals "point" -> our goal-line market key. Plain "totals" usually
+# returns only the 2.5 main line; we map every line a book happens to return.
+TOTALS_LINES = {1.5: "ou15", 2.5: "ou25", 3.5: "ou35", 4.5: "ou45", 5.5: "ou55"}
+
+
+def _market_snapshots(mkt: dict, ev: dict, fixture_id: int, now: str) -> list[dict]:
+    """Parse one bookmaker market into odds_snapshots rows. Pure (no I/O) so the
+    h2h / totals / btts mapping is unit-tested. Unknown markets -> []."""
+    key = mkt.get("key")
+    bm_key = mkt.get("_bm")  # bookmaker key, threaded in by the caller
+    rows: list[dict] = []
+
+    def add(market, selection, price):
+        rows.append({
+            "fixture_id": fixture_id, "bookmaker": bm_key, "market": market,
+            "selection": selection, "decimal_odds": price, "fetched_at": now,
+        })
+
+    for out in mkt.get("outcomes", []):
+        name = str(out.get("name", ""))
+        if key == "h2h":
+            sel = "home" if name == ev.get("home_team") else "away" if name == ev.get("away_team") else "draw"
+            add("h2h", sel, out["price"])
+        elif key == "totals":
+            market = TOTALS_LINES.get(out.get("point"))
+            sel = name.lower()
+            if market and sel in ("over", "under"):
+                add(market, sel, out["price"])
+        elif key == "btts":
+            sel = name.lower()
+            if sel in ("yes", "no"):
+                add("btts", sel, out["price"])
+    return rows
+
+
 def _pull_gate(fixtures, now_dt) -> str | None:
     """Reason to skip this pull, or None to proceed. The cron is hourly but
     credits are finite (~500/month free tier vs ~720 hourly pulls over the
@@ -127,42 +162,7 @@ def run():
             continue
         for bm in ev.get("bookmakers", []):
             for mkt in bm.get("markets", []):
-                if mkt.get("key") == "h2h":
-                    for out in mkt.get("outcomes", []):
-                        if out["name"] == ev["home_team"]:
-                            sel = "home"
-                        elif out["name"] == ev["away_team"]:
-                            sel = "away"
-                        else:
-                            sel = "draw"
-                        snapshots.append(
-                            {
-                                "fixture_id": fixture["id"],
-                                "bookmaker": bm["key"],
-                                "market": "h2h",
-                                "selection": sel,
-                                "decimal_odds": out["price"],
-                                "fetched_at": now,
-                            }
-                        )
-                elif mkt.get("key") == "totals":
-                    # only the 2.5 line — that's the market the models price
-                    for out in mkt.get("outcomes", []):
-                        if out.get("point") != 2.5:
-                            continue
-                        sel = str(out.get("name", "")).lower()
-                        if sel not in ("over", "under"):
-                            continue
-                        snapshots.append(
-                            {
-                                "fixture_id": fixture["id"],
-                                "bookmaker": bm["key"],
-                                "market": "ou25",
-                                "selection": sel,
-                                "decimal_odds": out["price"],
-                                "fetched_at": now,
-                            }
-                        )
+                snapshots.extend(_market_snapshots({**mkt, "_bm": bm["key"]}, ev, fixture["id"], now))
     for i in range(0, len(snapshots), 500):
         sb().table("odds_snapshots").insert(snapshots[i : i + 500]).execute()
     cache.set("odds:last_pull", now, ttl_seconds=86400 * 7)

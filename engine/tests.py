@@ -242,6 +242,36 @@ def main():
     missing = _player_row({"player_id": "pl_x"}, 99, 10, "2026-06-17T00:00:00Z")
     check("absent blocks -> None metrics", missing["goals"] is None and missing["key_passes"] is None)
 
+    print("== Odds parsing + Value-mode edge attachment ==")
+    from .ingest_odds import _market_snapshots
+    ev = {"home_team": "Brazil", "away_team": "Serbia"}
+    h2h = _market_snapshots(
+        {"key": "h2h", "_bm": "pin", "outcomes": [
+            {"name": "Brazil", "price": 1.5}, {"name": "Serbia", "price": 7.0}, {"name": "Draw", "price": 4.2}]},
+        ev, 1, "now")
+    check("h2h maps home/away/draw", {r["selection"] for r in h2h} == {"home", "away", "draw"})
+    check("h2h home price kept", next(r for r in h2h if r["selection"] == "home")["decimal_odds"] == 1.5)
+    totals = _market_snapshots(
+        {"key": "totals", "_bm": "pin", "outcomes": [
+            {"name": "Over", "point": 2.5, "price": 1.9}, {"name": "Under", "point": 2.5, "price": 1.95},
+            {"name": "Over", "point": 3.5, "price": 3.1}]},
+        ev, 1, "now")
+    check("totals maps every line present", {r["market"] for r in totals} == {"ou25", "ou35"})
+    check("totals carries over/under", {r["selection"] for r in totals if r["market"] == "ou25"} == {"over", "under"})
+    btts = _market_snapshots(
+        {"key": "btts", "_bm": "pin", "outcomes": [{"name": "Yes", "price": 1.8}, {"name": "No", "price": 2.0}]},
+        ev, 1, "now")
+    check("btts maps yes/no", {(r["market"], r["selection"]) for r in btts} == {("btts", "yes"), ("btts", "no")})
+    check("unknown market -> no rows", _market_snapshots({"key": "spreads", "_bm": "x", "outcomes": []}, ev, 1, "now") == [])
+
+    from .match_model import apply_book
+    books = {"ou25": {1: {"over": (1.90, 0.50)}}}  # devigged book P(over)=0.50
+    over_row = apply_book({"fixture_id": 1, "market": "ou25", "selection": "over", "probability": 0.62}, books)
+    check("ou25 over gets a book price (Value-eligible now, not just 1X2)", over_row["market_odds"] == 1.9)
+    check("edge = model − devig", abs(over_row["edge"] - 0.12) < 1e-9)
+    no_book = apply_book({"fixture_id": 2, "market": "ou25", "selection": "over", "probability": 0.62}, books)
+    check("no book price -> no edge (stays out of Value)", no_book.get("market_odds") is None and no_book.get("edge") is None)
+
     print("== Ratings ==")
     check("Elo expectancy at 0 is 0.5", abs(_expected(0) - 0.5) < 1e-12)
     check("Elo expectancy monotone", _expected(200) > _expected(100) > _expected(0))
