@@ -219,6 +219,29 @@ def main():
     check("absent half stat is None", srows[(10, "1H")]["corners"] is None)
     check("no mapped team -> no rows", _stat_rows(99, sample, None, None) == [])
 
+    print("== StatsAPI player-stats parsing (documented shape) ==")
+    from .ingest_statsapi_extra import _player_row
+    psample = {
+        "player_id": "pl_6241", "player_name": "Mohamed Salah", "team_id": "tm_8923",
+        "position": "F", "rating": 8.2, "minutes_played": 90, "started": True, "played": True,
+        "passing": {"total": 42, "accurate": 38, "key_passes": 3},
+        "shooting": {"total": 5, "on_target": 3, "goals": 1},
+        "duels": {"total": 12, "won": 8},
+        "defending": {"tackles": 2, "interceptions": 1},
+        "goalkeeping": None,
+        "general": {"dribbles_attempted": 6, "dribbles_succeeded": 4,
+                    "fouls_drawn": 3, "fouls_committed": 1, "yellow_cards": 0, "red_cards": 0},
+    }
+    pr = _player_row(psample, 99, 10, "2026-06-17T00:00:00Z")
+    check("player identity parsed", pr["statsapi_id"] == "pl_6241" and pr["name"] == "Mohamed Salah")
+    check("scoring/shots parsed", pr["goals"] == 1 and pr["shots"] == 5 and pr["shots_on_target"] == 3)
+    check("creation + duels parsed", pr["key_passes"] == 3 and pr["duels_won"] == 8)
+    check("dribbles + fouls drawn parsed", pr["dribbles"] == 4 and pr["fouls_drawn"] == 3)
+    check("discipline parsed", pr["fouls_committed"] == 1 and pr["yellows"] == 0 and pr["reds"] == 0)
+    check("minutes + rating parsed", pr["minutes"] == 90 and abs(pr["rating"] - 8.2) < 1e-9)
+    missing = _player_row({"player_id": "pl_x"}, 99, 10, "2026-06-17T00:00:00Z")
+    check("absent blocks -> None metrics", missing["goals"] is None and missing["key_passes"] is None)
+
     print("== Ratings ==")
     check("Elo expectancy at 0 is 0.5", abs(_expected(0) - 0.5) < 1e-12)
     check("Elo expectancy monotone", _expected(200) > _expected(100) > _expected(0))

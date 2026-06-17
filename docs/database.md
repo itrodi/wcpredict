@@ -20,6 +20,9 @@ Schema lives in `supabase/migrations/` and must be run in order:
 7. `0007_v48.sql` — v4.8, additive: `score_grids` (+ Realtime) — per-fixture
    full-time scoreline grid, so `/strategies` prices exact goal-pair joints
    (result × goals-over × BTTS) instead of a copula approximation.
+8. `0008_v49.sql` — v4.9, additive: `player_match_stats` — per-appearance player
+   stats from `/matches/{id}/player-stats`, aggregated on the team page into
+   per-metric "driver" rankings (goals/BTTS, creation, corners, card risk).
 
 Seed data is `supabase/seed.sql` (idempotent — `on conflict (slug) do update`):
 41 qualified teams with initial Elo approximated from eloratings.net.

@@ -31,7 +31,7 @@ without code changes.
 | `verify_statsapi.py` | B | Phase 0 trial-week gate (incl. 2b odds re-test) → `docs/statsapi-verification.md` |
 | `calibrate.py` | B | history pulls (paginated), parameter fits incl. per-half shares, WC2022 backtest |
 | `ops.py` | shared | `ops_status` writer — operational truth for `/admin/health` |
-| `ingest_statsapi_extra.py` | B | §5.0 odds probe/ingest, shotmaps, player stats + lineup strength |
+| `ingest_statsapi_extra.py` | B | §5.0 odds probe/ingest, shotmaps, per-match player stats (`player_match_stats`), player season stats + lineup strength |
 | `signals.py` | B | derived team + referee signals (display/rationale only, never model inputs) |
 | `picks.py` | shared | rule-generated, immutable, publicly settled picks (after compare) |
 
@@ -116,6 +116,14 @@ without code changes.
   (no copula), which is what lets the result market combine with goals/BTTS at
   all (it has no clean copula axis). Pairs that touch corners or first-half goals
   aren't on the grid and fall back to the fitted-correlation copula below.
+- **Player drivers** (`ingest_statsapi_extra.ingest_player_match_stats` ->
+  `player_match_stats`; frontend `lib/playerDrivers.ts`): per-appearance player
+  stats are ingested for finished mapped fixtures, and the team page aggregates
+  them into "who drives each metric" — tying individual players to the markets
+  we price (goals/BTTS via goals + shots on target, chance creation via key
+  passes, the corners market via shots + dribbles + fouls won, card risk via
+  fouls + bookings). Grows through the tournament; display/context only, not a
+  model input.
 - **Same-game correlations** (`engine/correlations.py` -> `market_correlations`):
   the copula ρ for each goal-driven market-category pair (ftgoals/btts/corners/
   hfgoals — result and correct-score are excluded) is the **tetrachoric

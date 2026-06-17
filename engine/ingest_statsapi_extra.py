@@ -190,6 +190,82 @@ def ingest_shotmaps():
     print(f"[statsapi_extra] ingested {n} shots for {len(todo)} fixtures")
 
 
+# --------------------------------- 5.7 per-match player stats (v4.9) ----
+def _num(node, *keys):
+    """Nested numeric lookup: _num(p, 'shooting', 'goals') -> p['shooting']['goals']
+    as int, or None. Defensive against missing blocks / non-numeric values."""
+    cur = node
+    for k in keys:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    try:
+        return int(round(float(cur)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _player_row(p: dict, fixture_id: int, team_id: int, now: str) -> dict:
+    """One /matches/{id}/player-stats entry -> a player_match_stats row. Pure;
+    unit-tested against the documented payload shape."""
+    rating = pick(p, "rating")
+    try:
+        rating = round(float(rating), 2)
+    except (TypeError, ValueError):
+        rating = None
+    return {
+        "fixture_id": fixture_id,
+        "team_id": team_id,
+        "statsapi_id": str(pick(p, "player_id", "id", default="")),
+        "name": pick(p, "player_name", "name"),
+        "position": pick(p, "position"),
+        "minutes": _num(p, "minutes_played") if "minutes_played" in p else _num(p, "minutes"),
+        "rating": rating,
+        "goals": _num(p, "shooting", "goals"),
+        "shots": _num(p, "shooting", "total"),
+        "shots_on_target": _num(p, "shooting", "on_target"),
+        "key_passes": _num(p, "passing", "key_passes"),
+        "duels_won": _num(p, "duels", "won"),
+        "dribbles": _num(p, "general", "dribbles_succeeded"),
+        "fouls_drawn": _num(p, "general", "fouls_drawn"),
+        "fouls_committed": _num(p, "general", "fouls_committed"),
+        "yellows": _num(p, "general", "yellow_cards"),
+        "reds": _num(p, "general", "red_cards"),
+        "computed_at": now,
+    }
+
+
+def ingest_player_match_stats():
+    """Per-appearance player stats for finished mapped fixtures -> player_match_stats.
+    The team page aggregates these into per-metric 'driver' rankings. Mirrors the
+    shotmap ingest's once-per-fixture cadence."""
+    fmap = _fixture_map()
+    tmap = _team_map()
+    finished = sb().table("fixtures").select("id").eq("status", "finished").execute().data
+    have = {r["fixture_id"] for r in sb().table("player_match_stats").select("fixture_id").execute().data}
+    todo = [f["id"] for f in finished if f["id"] in fmap and f["id"] not in have]
+    n = 0
+    for fid in todo:
+        try:
+            payload = statsapi.get(f"/matches/{fmap[fid]}/player-stats", ttl=86400 * 30)
+        except Exception as e:
+            print(f"[statsapi_extra] player-stats fetch failed for fixture {fid}: {e}")
+            continue
+        now = _now()
+        rows = []
+        for p in as_list(payload, "players", "player_stats"):
+            team_id = tmap.get(str(pick(p, "team_id", "team")))
+            if team_id is None:
+                continue
+            row = _player_row(p, fid, team_id, now)
+            if row["statsapi_id"]:
+                rows.append(row)
+        if rows:
+            sb().table("player_match_stats").upsert(rows, on_conflict="fixture_id,statsapi_id").execute()
+            n += len(rows)
+    print(f"[statsapi_extra] ingested {n} player-match-stat rows for {len(todo)} fixtures")
+
+
 # ------------------------------------------ 5.3 players + lineup strength ----
 def ingest_players_and_strength():
     """Weekly-cadence player stats (api_cache TTL handles the cadence), then
@@ -270,6 +346,7 @@ def ingest_players_and_strength():
 def run():
     ingest_match_odds()
     ingest_shotmaps()
+    ingest_player_match_stats()
     ingest_players_and_strength()
 
 
