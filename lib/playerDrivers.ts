@@ -6,6 +6,7 @@
 
 export type PlayerMatchStat = {
   statsapi_id: string;
+  team_id?: number | null;
   name: string | null;
   position: string | null;
   minutes: number | null;

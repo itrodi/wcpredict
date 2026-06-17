@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import InsightsCard, { buildInsights } from "@/components/InsightsCard";
+import KeyPlayers from "@/components/KeyPlayers";
 import LineMovementChart from "@/components/LineMovementChart";
 import LineupsPanel from "@/components/LineupsPanel";
 import MatchMarkets from "@/components/MatchMarkets";
@@ -9,6 +10,7 @@ import ModelSwitcher from "@/components/ModelSwitcher";
 import StatsPanel from "@/components/StatsPanel";
 import { kickoffFmt, STAGE_LABELS } from "@/lib/format";
 import { EXPERIMENTAL_MIN_N } from "@/lib/markets";
+import { type PlayerMatchStat } from "@/lib/playerDrivers";
 import { mergeViewRows, resolveView } from "@/lib/pipeline";
 import { supabaseServer } from "@/lib/supabase/server";
 import type {
@@ -74,6 +76,7 @@ export default async function MatchPage({
     { data: snaps },
     { data: sigs },
     { data: refSig },
+    { data: playerStats },
   ] = await Promise.all([
     sb
       .from("match_predictions")
@@ -96,6 +99,9 @@ export default async function MatchPage({
     f.referee
       ? sb.from("referee_signals").select("*").eq("referee", f.referee).maybeSingle()
       : Promise.resolve({ data: null }),
+    teamIds.length
+      ? sb.from("player_match_stats").select("*").in("team_id", teamIds)
+      : Promise.resolve({ data: [] }),
   ]);
 
   const initial = mergeViewRows((preds as MatchPrediction[] | null) ?? [], view);
@@ -160,6 +166,14 @@ export default async function MatchPage({
       <ModelSwitcher active={view.view} />
 
       <InsightsCard bullets={insights} />
+
+      <KeyPlayers
+        homeName={f.home?.name ?? "Home"}
+        awayName={f.away?.name ?? "Away"}
+        homeTeamId={f.home_id}
+        awayTeamId={f.away_id}
+        rows={(playerStats as PlayerMatchStat[] | null) ?? []}
+      />
 
       <StatsPanel
         fixtureId={fixtureId}

@@ -13,7 +13,7 @@ import numpy as np
 
 from . import config
 from .db import fetch_all, sb
-from .match_model import _latest_devigged, _latest_devigged_h2h, elo_lambdas, power_devig
+from .match_model import apply_book, devigged_books, elo_lambdas, power_devig
 
 P = config.MODEL_PARAMS
 
@@ -269,9 +269,8 @@ def run() -> list[dict]:
     )
     fixtures = [f for f in fixtures if f["home_id"] and f["away_id"]]
     fids = [f["id"] for f in fixtures]
-    book = _latest_devigged_h2h(fids)
-    book_ou = _latest_devigged(fids, "ou25", {"over", "under"})
-    corners_book = _latest_corners_odds(fids)
+    books = devigged_books(fids)              # 1X2 / goal lines / BTTS book prices
+    corners_book = _latest_corners_odds(fids)  # corners prices (statsapi source)
     corner_model = load_corner_model()
 
     rows = []
@@ -294,15 +293,9 @@ def run() -> list[dict]:
                 "edge": None,
                 "model_version": config.MODEL_VERSION_B,
             }
-            if market == "1x2" and f["id"] in book:
-                med_odds, devig_p = book[f["id"]][selection]
-                row["market_odds"] = round(med_odds, 3)
-                row["edge"] = round(p - devig_p, 4)
-            elif market == "ou25" and f["id"] in book_ou:
-                med_odds, devig_p = book_ou[f["id"]][selection]
-                row["market_odds"] = round(med_odds, 3)
-                row["edge"] = round(p - devig_p, 4)
-            elif (f["id"], market) in corners_book and selection in corners_book[(f["id"], market)]:
+            apply_book(row, books)  # 1X2 / goal lines / BTTS
+            if row["market_odds"] is None and (f["id"], market) in corners_book \
+                    and selection in corners_book[(f["id"], market)]:
                 med_odds, devig_p = corners_book[(f["id"], market)][selection]
                 row["market_odds"] = round(med_odds, 3)
                 row["edge"] = round(p - devig_p, 4)

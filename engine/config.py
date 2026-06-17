@@ -96,9 +96,12 @@ EXPERIMENTAL_MIN_N = 30
 # The Odds API (shared market layer for BOTH pipelines — stats plan has no odds)
 ODDS_SPORT_KEY = "soccer_fifa_world_cup"
 ODDS_REGION = "eu"          # ONE region x ONE market = 1 credit per call (v3 spec §9b)
-# markets per pull: each market costs a credit per call. "h2h,totals" doubles
-# the spend but unlocks ou25 edges/value picks — only enable on a paid plan.
-ODDS_MARKETS = os.environ.get("ODDS_MARKETS", "h2h")
+# markets per pull: each market costs a credit per call. Default "h2h,totals"
+# prices both the result AND over/under 2.5 (so Value mode surfaces goals overs,
+# not just the result); add "btts" to also price both-teams-to-score. Every
+# extra market ~doubles the monthly credit spend — the credit-reserve guard and
+# kickoff-aware pull cadence keep it inside the free tier.
+ODDS_MARKETS = os.environ.get("ODDS_MARKETS", "h2h,totals")
 ODDS_CREDIT_RESERVE = 60    # skip odds refresh when fewer credits remain
 ODDS_SNAPSHOT_RETENTION_DAYS = 14
 # kickoff-aware pull spacing (cron stays hourly; this gate is what spends
