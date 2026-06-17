@@ -108,6 +108,14 @@ without code changes.
   treated as independent (one leg per fixture); same-game pairs price their
   dependence with a Gaussian copula (`lib/stats.ts`). Browse projections, not
   published/settled bets.
+- **Exact goal joints** (`engine/match_model.py` `score_grid_rows` ->
+  `score_grids`; frontend `lib/scoregrid.ts`): the engine stores each scheduled
+  fixture's full-time scoreline grid (free Elo→Poisson model, 0–7 goals a side).
+  The `/strategies` pricer computes the **exact** same-game joint for pure goal
+  pairs — full-time result × goals over/under × BTTS — straight off that grid
+  (no copula), which is what lets the result market combine with goals/BTTS at
+  all (it has no clean copula axis). Pairs that touch corners or first-half goals
+  aren't on the grid and fall back to the fitted-correlation copula below.
 - **Same-game correlations** (`engine/correlations.py` -> `market_correlations`):
   the copula ρ for each goal-driven market-category pair (ftgoals/btts/corners/
   hfgoals — result and correct-score are excluded) is the **tetrachoric

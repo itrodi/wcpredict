@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { pairCorrelation, sameGameEligible } from "../lib/correlation";
+import { gridJoint, isGridMarket } from "../lib/scoregrid";
 import {
   bestLegPerFixture,
   buildStrategies,
@@ -255,6 +256,41 @@ test("sameGameCombos needs an eligible pair", () => {
         edge: 0.02, ev: 1.02, flatStake: 1, kelly: 0 },
     ] as StrategyLeg[],
   };
-  // 1x2 isn't same-game eligible, so no pair can form
+  // without a scoreline grid, 1x2 isn't same-game eligible, so no pair can form
   assert.equal(sameGameCombos([bucket], "safe").length, 0);
+});
+
+test("sameGameCombos: result × goals-over is priced EXACTLY from the scoreline grid", () => {
+  // home-favourite, high-scoring grid (rows = home goals, cols = away goals)
+  const grid = [
+    [0.02, 0.02, 0.02],
+    [0.06, 0.1, 0.05],
+    [0.15, 0.3, 0.28],
+  ];
+  const exactJoint = gridJoint(grid, { market: "1x2", selection: "home" }, { market: "ou15", selection: "over" })!;
+  assert.ok(Math.abs(exactJoint.joint - 0.45) < 1e-9, "home AND over-1.5 = 0.45 by hand");
+
+  const bucket = {
+    home: "A", away: "B", kickoff: "2026-06-20T18:00:00Z", grid,
+    legs: [
+      { fixtureId: 1, home: "A", away: "B", kickoff: "2026-06-20T18:00:00Z",
+        market: "1x2", selection: "home", probability: 0.51, odds: 1.9, oddsIsFair: false,
+        edge: 0.02, ev: 1.05, flatStake: 1, kelly: 0 },
+      { fixtureId: 1, home: "A", away: "B", kickoff: "2026-06-20T18:00:00Z",
+        market: "ou15", selection: "over", probability: 0.9, odds: 1.25, oddsIsFair: false,
+        edge: 0.02, ev: 1.12, flatStake: 1, kelly: 0 },
+    ] as StrategyLeg[],
+  };
+  const [sgc] = sameGameCombos([bucket], "safe");
+  assert.equal(sgc.exact, true);
+  assert.ok(Math.abs(sgc.jointProbability - 0.45) < 1e-9, "joint comes straight from the grid");
+  assert.ok(Math.abs(sgc.independentProbability - 0.51 * 0.9) < 1e-9, "indep. uses grid marginals");
+});
+
+test("isGridMarket: result/goals/BTTS are grid markets; corners/1H are not", () => {
+  assert.equal(isGridMarket("1x2"), true);
+  assert.equal(isGridMarket("ou25"), true);
+  assert.equal(isGridMarket("btts"), true);
+  assert.equal(isGridMarket("corners_o95"), false);
+  assert.equal(isGridMarket("ou15_1h"), false);
 });
