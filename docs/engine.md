@@ -123,7 +123,10 @@ without code changes.
   we price (goals/BTTS via goals + shots on target, chance creation via key
   passes, the corners market via shots + dribbles + fouls won, card risk via
   fouls + bookings). Grows through the tournament; display/context only, not a
-  model input.
+  model input. Surfaced on the team page (squad-wide drivers) and the match page
+  (`components/KeyPlayers.tsx` — each side's standout per metric beside the
+  prediction). Player data is deliberately NOT a model input: there is no
+  pre-match lineups endpoint, so who actually starts is unknown before kickoff.
 - **Same-game correlations** (`engine/correlations.py` -> `market_correlations`):
   the copula ρ for each goal-driven market-category pair (ftgoals/btts/corners/
   hfgoals — result and correct-score are excluded) is the **tetrachoric
