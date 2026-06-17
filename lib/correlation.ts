@@ -30,9 +30,12 @@ function direction(selection: string): 1 | -1 | null {
   return null;
 }
 
-/** Base correlation magnitude per unordered category pair (all positive on the
- * "more events" axis; sign is applied from the selection directions). */
-const BASE_RHO: Record<string, number> = {
+/** Conservative prior correlation per unordered category pair (all positive on
+ * the "more events" axis; sign is applied from the selection directions). Used
+ * only as the fallback / shrinkage prior — the engine fits these from finished
+ * matches (engine/correlations.py, MUST stay in sync) and the live values
+ * arrive via `fitted`. */
+export const BASE_RHO: Record<string, number> = {
   "btts|ftgoals": 0.55,
   "corners|ftgoals": 0.3,
   "ftgoals|hfgoals": 0.45,
@@ -41,12 +44,17 @@ const BASE_RHO: Record<string, number> = {
   "corners|hfgoals": 0.2,
 };
 
+/** Fitted (or prior) base correlations, keyed by sorted "catA|catB". */
+export type FittedCorrelations = Map<string, number>;
+
 /** Correlation ρ between two same-game legs, or null when the pair isn't
  * eligible for a same-game combo (unmodeled market, same category — which would
- * be a nested/duplicate bet — or a non-directional selection). */
+ * be a nested/duplicate bet — or a non-directional selection). When `fitted`
+ * carries a live estimate for the pair it wins over the static prior. */
 export function pairCorrelation(
   a: { market: string; selection: string },
-  b: { market: string; selection: string }
+  b: { market: string; selection: string },
+  fitted?: FittedCorrelations
 ): number | null {
   const ca = category(a.market);
   const cb = category(b.market);
@@ -54,7 +62,8 @@ export function pairCorrelation(
   const da = direction(a.selection);
   const db = direction(b.selection);
   if (da == null || db == null) return null;
-  const base = BASE_RHO[[ca, cb].sort().join("|")];
+  const key = [ca, cb].sort().join("|");
+  const base = fitted?.get(key) ?? BASE_RHO[key];
   if (base == null) return null;
   return base * da * db;
 }

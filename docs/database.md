@@ -14,6 +14,9 @@ Schema lives in `supabase/migrations/` and must be run in order:
 5. `0005_v43.sql` — v4.3, additive: `closing_odds` (CLV record), `picks.clv`/
    `closing_odds`, `model_scores.beats_baseline` (quality gate), and
    `fixture_incentives` (group-stage advancement leverage).
+6. `0006_v47.sql` — v4.7, additive: `market_correlations` (+ Realtime) —
+   same-game market-category correlations fitted from finished matches by
+   `engine/correlations.py`, read by the `/strategies` same-game combo pricer.
 
 Seed data is `supabase/seed.sql` (idempotent — `on conflict (slug) do update`):
 41 qualified teams with initial Elo approximated from eloratings.net.

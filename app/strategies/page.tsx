@@ -50,10 +50,11 @@ export default async function StrategiesPage({
   const view = await resolveView(sp, sb);
 
   let days: Matchday[] = [];
+  let corrMatches = 0; // finished matches behind the fitted correlations (max n)
   if (sb) {
     const now = new Date().toISOString();
     const horizon = new Date(Date.now() + HORIZON_DAYS * 86400_000).toISOString();
-    const [{ data }, { data: scores }] = await Promise.all([
+    const [{ data }, { data: scores }, { data: corr }] = await Promise.all([
       sb
         .from("match_predictions")
         .select(
@@ -66,9 +67,15 @@ export default async function StrategiesPage({
         .lte("fixtures.kickoff", horizon)
         .limit(4000),
       sb.from("model_scores").select("*").gte("n", EXPERIMENTAL_MIN_N).eq("beats_baseline", true),
+      sb.from("market_correlations").select("category_a, category_b, rho, n"),
     ]);
     const calibrated = ((scores as ModelScore[] | null) ?? []).map((s) => s.market);
-    days = buildStrategies((data as unknown as StrategyRow[] | null) ?? [], view, calibrated, mode);
+    // fitted same-game correlations (engine/correlations.py); falls back to the
+    // static prior in lib/correlation.ts for any pair the engine hasn't written
+    const corrRows = (corr as { category_a: string; category_b: string; rho: number; n: number }[] | null) ?? [];
+    const fitted = new Map(corrRows.map((r) => [`${r.category_a}|${r.category_b}`, Number(r.rho)]));
+    corrMatches = corrRows.reduce((m, r) => Math.max(m, Number(r.n) || 0), 0);
+    days = buildStrategies((data as unknown as StrategyRow[] | null) ?? [], view, calibrated, mode, fitted);
   }
 
   const isValue = mode === "value";
@@ -112,7 +119,12 @@ export default async function StrategiesPage({
         ranks by expected value (probability × odds) and only shows positive-edge bets at a real book
         price. <strong>Same-game combos</strong> pair two markets in one match and price their
         correlation with a copula, so the joint probability isn&rsquo;t a naive product — the{" "}
-        <span className="italic">indep.</span> figure shows what the product would have been.{" "}
+        <span className="italic">indep.</span> figure shows what the product would have been. The
+        correlations are{" "}
+        {corrMatches > 0
+          ? `fitted from ${corrMatches} finished match${corrMatches === 1 ? "" : "es"} so far (shrunk toward a prior while the sample is small)`
+          : "conservative prior estimates until finished matches accumulate"}
+        .{" "}
         <strong>Flat</strong> is a fixed 1-unit stake; <strong>Kelly</strong> is a fraction of bankroll
         sized by edge ({KELLY_FRACTION === 0.25 ? "quarter" : `${KELLY_FRACTION}×`}-Kelly, capped at{" "}
         {Math.round(KELLY_CAP * 100)}%) and reads &ldquo;—&rdquo; when the price carries no edge. Odds

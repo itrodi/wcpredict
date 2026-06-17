@@ -15,7 +15,7 @@
  * (else the model's fair odds, which carry zero edge → Kelly = 0). Pure +
  * unit-tested. */
 
-import { pairCorrelation, sameGameEligible } from "./correlation";
+import { type FittedCorrelations, pairCorrelation, sameGameEligible } from "./correlation";
 import { isExperimental } from "./markets";
 import { gaussianCopulaJoint } from "./stats";
 
@@ -266,7 +266,8 @@ export const safestCombos = (legs: StrategyLeg[], sizes = COMBO_SIZES): Combo[] 
  *           book prices on both legs. */
 export function sameGameCombos(
   buckets: { home: string; away: string; kickoff: string; legs: StrategyLeg[] }[],
-  mode: StrategyMode = "safe"
+  mode: StrategyMode = "safe",
+  fitted?: FittedCorrelations
 ): SameGameCombo[] {
   const out: SameGameCombo[] = [];
   for (const b of buckets) {
@@ -278,7 +279,7 @@ export function sameGameCombos(
       for (let j = i + 1; j < eligible.length; j++) {
         const a = eligible[i];
         const c = eligible[j];
-        const rho = pairCorrelation(a, c);
+        const rho = pairCorrelation(a, c, fitted);
         if (rho == null) continue;
 
         const jointProbability = gaussianCopulaJoint(a.probability, c.probability, rho);
@@ -331,6 +332,7 @@ export function buildStrategies(
   resolved: { blendPipeline: string; modelPipeline: string },
   calibratedMarkets: string[],
   mode: StrategyMode = "safe",
+  fitted?: FittedCorrelations,
   singlesLimit = SINGLES_LIMIT
 ): Matchday[] {
   const buckets = legBuckets(rows, resolved, calibratedMarkets, mode);
@@ -358,7 +360,7 @@ export function buildStrategies(
       legCount: ranked.length,
       singles: ranked.slice(0, singlesLimit),
       combos: crossMatchCombos(ranked, mode),
-      sameGame: sameGameCombos(slot.buckets, mode).slice(0, singlesLimit),
+      sameGame: sameGameCombos(slot.buckets, mode, fitted).slice(0, singlesLimit),
     });
   }
   days.sort((a, b) => a.date.localeCompare(b.date));

@@ -158,6 +158,33 @@ test("pairCorrelation: nested same-category and unmodeled pairs are ineligible",
   assert.equal(pairCorrelation({ market: "1x2", selection: "home" }, { market: "ou25", selection: "over" }), null);
 });
 
+test("pairCorrelation: a fitted estimate overrides the static prior", () => {
+  const fitted = new Map([["btts|ftgoals", 0.4]]); // engine-fit value, below the 0.55 prior
+  const rho = pairCorrelation(
+    { market: "ou25", selection: "over" },
+    { market: "btts", selection: "yes" },
+    fitted
+  );
+  assert.equal(rho, 0.4);
+  // direction still flips the sign on the fitted base
+  const flipped = pairCorrelation(
+    { market: "ou25", selection: "over" },
+    { market: "btts", selection: "no" },
+    fitted
+  );
+  assert.equal(flipped, -0.4);
+});
+
+test("pairCorrelation: falls back to the prior when fitted lacks the pair", () => {
+  const fitted = new Map([["corners|ftgoals", 0.1]]);
+  const rho = pairCorrelation(
+    { market: "ou25", selection: "over" },
+    { market: "btts", selection: "yes" },
+    fitted
+  );
+  assert.equal(rho, 0.55); // unchanged prior
+});
+
 test("sameGameEligible covers goal markets, excludes result/scoreline", () => {
   assert.ok(sameGameEligible("ou25"));
   assert.ok(sameGameEligible("btts"));

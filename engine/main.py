@@ -13,6 +13,7 @@ from . import (
     blend,
     compare,
     config,
+    correlations,
     ingest_fd,
     ingest_odds,
     ingest_statsapi,
@@ -114,6 +115,7 @@ def main():
     _stage("compare", compare.run)
     if statsapi_enabled:
         _stage("signals", signals.run)                        # team + referee signals (v4.1 §5.2/5.4)
+    _stage("correlations", correlations.run)                  # same-game market correlations (v4.7)
     _stage("picks", picks.run)                                # picks AFTER compare (v4.1 §4.1)
     _stage("prune_snapshots", ingest_odds.prune_snapshots)
     if statsapi_enabled:
