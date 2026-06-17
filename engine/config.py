@@ -84,6 +84,10 @@ MODEL_PARAMS = {
     # first-half corners share (v4.1 §5.6): 0 = market disabled; set from
     # calibrate.py output only if the calibration is satisfactory
     "CORNERS_1H_SHARE": _f("CORNERS_1H_SHARE", 0.0),
+    # correlations.py: same-game market correlations are empirical-Bayes shrunk
+    # toward the conservative prior by this pseudo-count of matches, so a handful
+    # of early-tournament games can't yank ρ to an extreme (cf. CORNER_SHRINK_K0)
+    "CORR_PRIOR_K": _f("CORR_PRIOR_K", 10.0),
 }
 
 # markets considered experimental until model_scores shows >= this many scored matches

@@ -343,6 +343,18 @@ def main():
             ok_combos += 1
     check("thirds allocation valid for all 495 scenarios", ok_combos == 495, f"{ok_combos}/495")
 
+    print("== Same-game correlation fit (tetrachoric) ==")
+    from .correlations import _binorm_cdf, _inv_norm_cdf, tetrachoric
+    # round-trip: build a joint from a known ρ, recover ρ from the marginals + joint
+    for p1, p2, rho0 in ((0.6, 0.5, 0.55), (0.4, 0.7, 0.3), (0.55, 0.45, -0.4)):
+        z1, z2 = _inv_norm_cdf(p1), _inv_norm_cdf(p2)
+        p12 = _binorm_cdf(z1, z2, rho0)
+        check(f"tetrachoric recovers ρ={rho0}", abs(tetrachoric(p1, p2, p12) - rho0) < 5e-3,
+              f"got {tetrachoric(p1, p2, p12):.4f}")
+    check("independence (p12 = p1·p2) -> ρ ≈ 0",
+          abs(tetrachoric(0.6, 0.5, 0.6 * 0.5)) < 5e-3)
+    check("degenerate marginal -> None", tetrachoric(1.0, 0.5, 0.5) is None)
+
     print("== Simulation invariants ==")
     teams = [{"id": gi * 4 + k + 1, "elo": 1950 - gi * 10 - k * 80, "elo_xg": None,
               "group_code": chr(ord("A") + gi)} for gi in range(12) for k in range(4)]

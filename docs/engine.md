@@ -101,6 +101,23 @@ without code changes.
   pick overall, each with a confidence %. Surfaces a corners read on *every*
   game even when none clears the banker floor. Pure model projections, not
   published/settled bets.
+- **Matchday strategies** (frontend, `lib/strategies.ts` + `/strategies`):
+  groups upcoming fixtures by match day and builds singles, cross-match
+  accumulators and same-game combos in a Safe (P-of-landing) or Value (EV at the
+  book price) mode, with flat + fractional-Kelly staking. Cross-match legs are
+  treated as independent (one leg per fixture); same-game pairs price their
+  dependence with a Gaussian copula (`lib/stats.ts`). Browse projections, not
+  published/settled bets.
+- **Same-game correlations** (`engine/correlations.py` -> `market_correlations`):
+  the copula ρ for each goal-driven market-category pair (ftgoals/btts/corners/
+  hfgoals — result and correct-score are excluded) is the **tetrachoric
+  correlation fitted from finished tournament matches**, reusing `settle_outcome`
+  for the realised events. Empirical-Bayes shrunk toward a conservative prior by
+  the count of jointly-settleable matches (`CORR_PRIOR_K`), so a handful of early
+  games can't yank ρ to an extreme; the frontend (`lib/correlation.ts`) reads the
+  table and falls back to the matching static prior for any unwritten pair. Runs
+  each refresh after `signals` (goal pairs need only Pipeline A results; corner
+  pairs additionally need `match_stats`).
 - **Leak plugs** (v4.3): the picks engine suppresses a fixture entirely when a
   confirmed lineup shows ≥2 key absences for any side (rotation — the market
   reprices on the team sheet, an Elo model does not), or `fixture_incentives`
