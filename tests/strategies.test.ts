@@ -7,13 +7,17 @@ import { pairCorrelation, sameGameEligible } from "../lib/correlation";
 import { gridJoint, isGridMarket } from "../lib/scoregrid";
 import {
   bestLegPerFixture,
+  buildRiskTiers,
   buildStrategies,
   crossMatchCombos,
   kelly,
   KELLY_CAP,
   matchdayKey,
+  RISK_TIERS,
   safestCombos,
   sameGameCombos,
+  TIER_BANDS,
+  type RiskTier,
   type StrategyLeg,
   type StrategyRow,
 } from "../lib/strategies";
@@ -293,4 +297,71 @@ test("isGridMarket: result/goals/BTTS are grid markets; corners/1H are not", () 
   assert.equal(isGridMarket("btts"), true);
   assert.equal(isGridMarket("corners_o95"), false);
   assert.equal(isGridMarket("ou15_1h"), false);
+});
+
+// ── risk tiers (safe / medium / risky) ───────────────────────────────────────
+
+test("TIER_BANDS partition the probability axis with no gaps or overlap", () => {
+  // riskiest floor → safest ceiling is a clean cover; adjacent bands meet exactly
+  assert.equal(TIER_BANDS.risky.maxProb, TIER_BANDS.medium.minProb);
+  assert.equal(TIER_BANDS.medium.maxProb, TIER_BANDS.safe.minProb);
+  // strictly increasing reliability, looser same-game floor as risk rises
+  assert.ok(TIER_BANDS.risky.minProb < TIER_BANDS.medium.minProb);
+  assert.ok(TIER_BANDS.medium.minProb < TIER_BANDS.safe.minProb);
+  assert.ok(TIER_BANDS.safe.minJoint > TIER_BANDS.medium.minJoint);
+  assert.ok(TIER_BANDS.medium.minJoint > TIER_BANDS.risky.minJoint);
+});
+
+test("buildRiskTiers routes a leg to the tier whose band holds its probability", () => {
+  const rows: StrategyRow[] = [
+    // ~0.82 over → safe band; ~0.50 result → medium; ~0.30 away win → risky
+    row(1, "ou15", "over", 0.82, 1.3, "free", fx(1, "2026-06-20T18:00:00Z", "A", "B")),
+    row(2, "1x2", "home", 0.5, 2.0, "blend_free", fx(2, "2026-06-20T20:00:00Z", "C", "D")),
+    row(3, "1x2", "away", 0.3, 3.4, "blend_free", fx(3, "2026-06-20T16:00:00Z", "E", "F")),
+  ];
+  const [day] = buildRiskTiers(rows, RESOLVED, ALL_CALIBRATED);
+  assert.equal(day.date, "2026-06-20");
+  assert.equal(day.legCount, 3);
+  const byTier = new Map(day.tiers.map((t) => [t.tier, t]));
+  assert.equal(byTier.get("safe")!.singles[0]?.fixtureId, 1);
+  assert.equal(byTier.get("medium")!.singles[0]?.fixtureId, 2);
+  assert.equal(byTier.get("risky")!.singles[0]?.fixtureId, 3);
+  // a leg shows in exactly one tier
+  for (const tier of RISK_TIERS as RiskTier[]) {
+    const others = day.tiers.filter((t) => t.tier !== tier);
+    for (const s of byTier.get(tier)!.singles) {
+      assert.ok(!others.some((o) => o.singles.some((x) => x.fixtureId === s.fixtureId)));
+    }
+  }
+});
+
+test("buildRiskTiers ranks value (positive edge) above a fair-odds banker in-band", () => {
+  const rows: StrategyRow[] = [
+    // both land in the medium band; fixture 2 has a real book edge, fixture 1 is fair-priced
+    row(1, "1x2", "home", 0.55, null, "blend_free", fx(1, "2026-06-20T18:00:00Z", "A", "B")),
+    { ...row(2, "ou25", "over", 0.55, 2.1, "free", fx(2, "2026-06-20T18:00:00Z", "C", "D")), edge: 0.07 },
+  ];
+  const [day] = buildRiskTiers(rows, RESOLVED, ALL_CALIBRATED);
+  const medium = day.tiers.find((t) => t.tier === "medium")!;
+  assert.equal(medium.singles[0].fixtureId, 2, "the positive-EV book price leads its tier");
+  assert.ok(medium.singles[0].ev > 1);
+});
+
+test("buildRiskTiers builds same-game combos in the riskier tiers via the looser joint floor", () => {
+  const grid = [
+    [0.04, 0.05, 0.03],
+    [0.08, 0.16, 0.09],
+    [0.07, 0.21, 0.27],
+  ];
+  const rows: StrategyRow[] = [
+    // two medium-band goal legs in one fixture → a same-game pair priced off the grid
+    row(1, "ou25", "over", 0.55, 1.8, "free", { ...fx(1, "2026-06-20T18:00:00Z", "A", "B") }),
+    row(1, "btts", "yes", 0.52, 1.9, "free"),
+  ];
+  const grids = new Map([[1, grid]]);
+  const [day] = buildRiskTiers(rows, RESOLVED, ALL_CALIBRATED, undefined, grids);
+  const medium = day.tiers.find((t) => t.tier === "medium")!;
+  assert.ok(medium.sameGame.length >= 1, "a same-game pair surfaces in the medium tier");
+  const sgc = medium.sameGame[0];
+  assert.ok(sgc.jointProbability >= TIER_BANDS.medium.minJoint);
 });

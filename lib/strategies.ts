@@ -23,6 +23,14 @@ import { gaussianCopulaJoint } from "./stats";
 export type StrategyMode = "safe" | "value";
 export const STRATEGY_MODES: StrategyMode[] = ["safe", "value"];
 
+/** Risk appetite shown side-by-side on the board (v4.9). A play's tier is set
+ * by how likely the model thinks it is to land — the legs are drawn from a
+ * probability band — and within each tier the picks are ranked to surface
+ * value (positive edge at the book price). This is the "safe / medium / risky"
+ * spectrum across every market (result, goals overs, BTTS, corners, halves). */
+export type RiskTier = "safe" | "medium" | "risky";
+export const RISK_TIERS: RiskTier[] = ["safe", "medium", "risky"];
+
 export type StrategyRow = {
   pipeline: string;
   market: string;
@@ -100,6 +108,21 @@ export const MIN_LEG_PROB = 0.5;
 /** Value legs may be underdogs, but not longshots, and need a positive edge. */
 export const MIN_VALUE_PROB = 0.25;
 
+/** Risk-tier bands, keyed on the model probability that a leg lands. The floor
+ * of the riskiest tier (MIN_VALUE_PROB) is the global cutoff — below it the
+ * model is too uncertain to surface. `minJoint` is the same-game joint floor
+ * for that tier (riskier tiers tolerate longer same-game pairs). `rankBy`
+ * decides the in-tier ordering: the safe tier leads with the likeliest pick,
+ * the riskier tiers lead with the best expected value. */
+export const TIER_BANDS: Record<
+  RiskTier,
+  { minProb: number; maxProb: number; minJoint: number; rankBy: StrategyMode }
+> = {
+  safe: { minProb: 0.6, maxProb: 1.01, minJoint: 0.42, rankBy: "safe" },
+  medium: { minProb: 0.42, maxProb: 0.6, minJoint: 0.25, rankBy: "value" },
+  risky: { minProb: MIN_VALUE_PROB, maxProb: 0.42, minJoint: 0.12, rankBy: "value" },
+};
+
 /** Accumulator fold sizes built per matchday, smallest first. */
 export const COMBO_SIZES = [2, 3, 4];
 
@@ -149,7 +172,8 @@ function legBuckets(
   resolved: { blendPipeline: string; modelPipeline: string },
   calibratedMarkets: string[],
   mode: StrategyMode,
-  grids?: Map<number, ScoreGrid>
+  grids?: Map<number, ScoreGrid>,
+  safeFloor = MIN_LEG_PROB
 ): Map<number, LegBucket> {
   const byFixture = new Map<number, StrategyRow[]>();
   for (const r of rows) {
@@ -182,7 +206,7 @@ function legBuckets(
       if (edge == null && book != null) edge = probability - 1 / book;
 
       if (mode === "safe") {
-        if (probability < MIN_LEG_PROB) continue;
+        if (probability < safeFloor) continue;
       } else {
         if (book == null) continue; // value needs a real price
         if (probability < MIN_VALUE_PROB) continue;
@@ -279,7 +303,8 @@ export const safestCombos = (legs: StrategyLeg[], sizes = COMBO_SIZES): Combo[] 
 export function sameGameCombos(
   buckets: { home: string; away: string; kickoff: string; legs: StrategyLeg[]; grid?: ScoreGrid }[],
   mode: StrategyMode = "safe",
-  fitted?: FittedCorrelations
+  fitted?: FittedCorrelations,
+  minJoint: number = SAME_GAME_MIN_JOINT
 ): SameGameCombo[] {
   const out: SameGameCombo[] = [];
   for (const b of buckets) {
@@ -324,7 +349,7 @@ export function sameGameCombos(
 
         if (mode === "value") {
           if (a.oddsIsFair || c.oddsIsFair || expectedValue <= 1) continue;
-        } else if (jointProbability < SAME_GAME_MIN_JOINT) {
+        } else if (jointProbability < minJoint) {
           continue;
         }
 
@@ -396,6 +421,89 @@ export function buildStrategies(
       singles: ranked.slice(0, singlesLimit),
       combos: crossMatchCombos(ranked, mode),
       sameGame: sameGameCombos(slot.buckets, mode, fitted).slice(0, singlesLimit),
+    });
+  }
+  days.sort((a, b) => a.date.localeCompare(b.date));
+  return days;
+}
+
+// ── Risk tiers (v4.9) ────────────────────────────────────────────────────────
+
+export type TierBoard = {
+  tier: RiskTier;
+  legCount: number;          // fixtures contributing a leg to this tier
+  singles: StrategyLeg[];
+  combos: Combo[];           // cross-match accumulators within the tier's band
+  sameGame: SameGameCombo[]; // correlation-aware same-game pairs within the band
+};
+
+export type MatchdayTiers = {
+  date: string;     // YYYY-MM-DD (UTC)
+  legCount: number; // distinct fixtures with any qualifying leg that day
+  tiers: TierBoard[]; // safe → medium → risky
+};
+
+/** Best leg per fixture under a tier's ranking metric, restricted to legs whose
+ * probability sits inside the tier's band. */
+function tierLegs(bucket: LegBucket, tier: RiskTier): StrategyLeg[] {
+  const band = TIER_BANDS[tier];
+  return bucket.legs.filter((l) => l.probability >= band.minProb && l.probability < band.maxProb);
+}
+
+/** The full safe→medium→risky board for every upcoming match day. Unlike
+ * `buildStrategies` (one mode at a time) this surfaces all three risk appetites
+ * at once: for each tier, the best single per fixture in that probability band,
+ * cross-match accumulators built from those legs, and correlation-aware
+ * same-game combos — every market in scope (result, goals overs, BTTS, corners,
+ * first half), value-ranked so positive-edge prices rise to the top. */
+export function buildRiskTiers(
+  rows: StrategyRow[],
+  resolved: { blendPipeline: string; modelPipeline: string },
+  calibratedMarkets: string[],
+  fitted?: FittedCorrelations,
+  grids?: Map<number, ScoreGrid>,
+  singlesLimit = SINGLES_LIMIT
+): MatchdayTiers[] {
+  // collect every priced leg down to the riskiest tier's floor, then band it
+  const buckets = legBuckets(rows, resolved, calibratedMarkets, "safe", grids, MIN_VALUE_PROB);
+
+  const byDay = new Map<string, LegBucket[]>();
+  for (const bucket of buckets.values()) {
+    const key = matchdayKey(bucket.kickoff);
+    const list = byDay.get(key) ?? [];
+    list.push(bucket);
+    byDay.set(key, list);
+  }
+
+  const days: MatchdayTiers[] = [];
+  for (const [date, dayBuckets] of byDay) {
+    const tiers: TierBoard[] = RISK_TIERS.map((tier) => {
+      const band = TIER_BANDS[tier];
+      const mode = band.rankBy;
+
+      // per-fixture buckets restricted to this tier's probability band
+      const bandBuckets = dayBuckets
+        .map((b) => ({ ...b, legs: tierLegs(b, tier) }))
+        .filter((b) => b.legs.length > 0);
+
+      const bestLegs = bandBuckets.map((b) => bestLeg(b.legs, mode));
+      const singles = [...bestLegs]
+        .sort((a, b) => legScore(b, mode) - legScore(a, mode) || b.odds - a.odds)
+        .slice(0, singlesLimit);
+
+      return {
+        tier,
+        legCount: bandBuckets.length,
+        singles,
+        combos: crossMatchCombos(bestLegs, mode),
+        sameGame: sameGameCombos(bandBuckets, "safe", fitted, band.minJoint).slice(0, singlesLimit),
+      };
+    });
+
+    days.push({
+      date,
+      legCount: dayBuckets.length,
+      tiers,
     });
   }
   days.sort((a, b) => a.date.localeCompare(b.date));
