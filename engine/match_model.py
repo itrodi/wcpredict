@@ -67,6 +67,39 @@ def markets_from_matrix(m: np.ndarray) -> list[tuple[str, str, float]]:
     return rows
 
 
+GRID_OUT = 8  # scoreline grid stored for the frontend: 0..7 goals per side (tail ~0)
+
+
+def score_grid_rows() -> list[dict]:
+    """Per-fixture full-time scoreline grids for scheduled fixtures -> score_grids.
+
+    The frontend prices EXACT same-game goal joints (result × goals-over × BTTS)
+    from these — one coherent joint distribution over (home, away) goals, free
+    pipeline only. Truncated to GRID_OUT×GRID_OUT and renormalised; cells beyond
+    7 goals a side are vanishingly small."""
+    from datetime import datetime, timezone
+
+    teams = {t["id"]: t for t in sb().table("teams").select("id, elo").execute().data}
+    fixtures = (
+        sb().table("fixtures").select("id, home_id, away_id, host_home, status")
+        .eq("status", "scheduled").execute().data
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for f in fixtures:
+        if not (f["home_id"] and f["away_id"]):
+            continue
+        m = scoreline_matrix(*elo_lambdas(
+            float(teams[f["home_id"]]["elo"]), float(teams[f["away_id"]]["elo"]), bool(f["host_home"])
+        ))
+        sub = m[:GRID_OUT, :GRID_OUT]
+        sub = sub / sub.sum()  # renormalise the truncated grid
+        grid = [[round(float(sub[i, j]), 6) for j in range(GRID_OUT)] for i in range(GRID_OUT)]
+        rows.append({"fixture_id": f["id"], "grid": grid, "computed_at": now})
+    print(f"[match_model] {len(rows)} scoreline grids")
+    return rows
+
+
 def power_devig(implied: dict[str, float]) -> dict[str, float]:
     """De-vig by the power method: q_i = p_i^k with k solved so Σq = 1.
 

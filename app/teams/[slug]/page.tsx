@@ -5,6 +5,12 @@ import ModelSwitcher from "@/components/ModelSwitcher";
 import ProbabilityBar from "@/components/ProbabilityBar";
 import UpdatedBadge from "@/components/UpdatedBadge";
 import { mergeViewRows, resolveView } from "@/lib/pipeline";
+import {
+  aggregatePlayers,
+  DRIVER_CATEGORIES,
+  type PlayerMatchStat,
+  topDrivers,
+} from "@/lib/playerDrivers";
 import { supabaseServer } from "@/lib/supabase/server";
 import type { Fixture, MatchPrediction, Team, TeamSignal, TournamentOdds } from "@/lib/types";
 
@@ -40,7 +46,7 @@ export default async function TeamPage({
   if (!team) notFound();
   const t = team as Team;
 
-  const [{ data: oddsRow }, { data: fx }, { data: sig }] = await Promise.all([
+  const [{ data: oddsRow }, { data: fx }, { data: sig }, { data: pms }] = await Promise.all([
     sb
       .from("tournament_odds")
       .select("*")
@@ -53,10 +59,12 @@ export default async function TeamPage({
       .or(`home_id.eq.${t.id},away_id.eq.${t.id}`)
       .order("kickoff", { ascending: true }),
     sb.from("team_signals").select("*").eq("team_id", t.id),
+    sb.from("player_match_stats").select("*").eq("team_id", t.id),
   ]);
   const odds = oddsRow as TournamentOdds | null;
   const fixtures = (fx as Fixture[] | null) ?? [];
   const signals = (sig as TeamSignal[] | null) ?? [];
+  const players = aggregatePlayers((pms as PlayerMatchStat[] | null) ?? []);
   const upcomingIds = fixtures.filter((f) => f.status !== "finished").map((f) => f.id);
 
   let predictions: MatchPrediction[] = [];
@@ -114,6 +122,50 @@ export default async function TeamPage({
                 </div>
               ))}
           </dl>
+        </section>
+      )}
+
+      {players.length > 0 && (
+        <section className="rounded-xl border border-pitch-700 bg-pitch-900 p-4">
+          <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-zinc-400">
+            Key players — what they drive
+          </h2>
+          <p className="mb-4 text-xs text-zinc-500">
+            Who powers each metric this tournament, from per-match player stats. Linked to the
+            markets we price.
+          </p>
+          <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+            {DRIVER_CATEGORIES.map((cat) => {
+              const top = topDrivers(players, cat);
+              if (top.length === 0) return null;
+              return (
+                <div key={cat.key}>
+                  <div className="mb-2 flex items-baseline justify-between gap-2">
+                    <span className="text-sm font-semibold text-zinc-200">{cat.label}</span>
+                    <span className="text-[10px] uppercase tracking-wide text-zinc-600">
+                      drives {cat.drives}
+                    </span>
+                  </div>
+                  <ol className="space-y-1.5 text-sm">
+                    {top.map(({ player }, i) => (
+                      <li key={player.id} className="flex items-baseline justify-between gap-3">
+                        <span className="truncate text-zinc-300">
+                          <span className="mr-1.5 text-zinc-600">{i + 1}.</span>
+                          {player.name}
+                          {player.position && (
+                            <span className="ml-1 text-[10px] text-zinc-600">{player.position}</span>
+                          )}
+                        </span>
+                        <span className="shrink-0 font-mono text-xs text-zinc-500">
+                          {cat.detail(player)}
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              );
+            })}
+          </div>
         </section>
       )}
 

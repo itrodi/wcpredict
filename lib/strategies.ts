@@ -17,6 +17,7 @@
 
 import { type FittedCorrelations, pairCorrelation, sameGameEligible } from "./correlation";
 import { isExperimental } from "./markets";
+import { gridJoint, isGridMarket, type ScoreGrid } from "./scoregrid";
 import { gaussianCopulaJoint } from "./stats";
 
 export type StrategyMode = "safe" | "value";
@@ -72,8 +73,9 @@ export type SameGameCombo = {
   away: string;
   kickoff: string;
   legs: [StrategyLeg, StrategyLeg];
-  rho: number;                    // modeled correlation between the two legs
-  jointProbability: number;       // copula joint P(both land), correlation-aware
+  rho: number;                    // correlation between the two legs (exact from the grid, or modeled)
+  exact: boolean;                 // true when priced from the exact scoreline grid (goal pairs)
+  jointProbability: number;       // P(both land): exact grid joint, else copula
   independentProbability: number; // naive product, for contrast
   combinedOdds: number;           // product of leg odds (the book's combo price)
   flatStake: number;
@@ -140,12 +142,15 @@ export function kelly(
  *  - drops excluded + still-experimental markets and unpriced selections
  *  - safe mode keeps prob ≥ MIN_LEG_PROB; value mode needs a book price,
  *    prob ≥ MIN_VALUE_PROB and a positive edge */
+type LegBucket = { home: string; away: string; kickoff: string; legs: StrategyLeg[]; grid?: ScoreGrid };
+
 function legBuckets(
   rows: StrategyRow[],
   resolved: { blendPipeline: string; modelPipeline: string },
   calibratedMarkets: string[],
-  mode: StrategyMode
-): Map<number, { home: string; away: string; kickoff: string; legs: StrategyLeg[] }> {
+  mode: StrategyMode,
+  grids?: Map<number, ScoreGrid>
+): Map<number, LegBucket> {
   const byFixture = new Map<number, StrategyRow[]>();
   for (const r of rows) {
     const list = byFixture.get(r.fixture_id) ?? [];
@@ -153,7 +158,7 @@ function legBuckets(
     byFixture.set(r.fixture_id, list);
   }
 
-  const out = new Map<number, { home: string; away: string; kickoff: string; legs: StrategyLeg[] }>();
+  const out = new Map<number, LegBucket>();
   for (const [fixtureId, list] of byFixture) {
     const fx = list.find((r) => r.fixtures)?.fixtures;
     if (!fx || fx.status === "finished") continue;
@@ -201,7 +206,14 @@ function legBuckets(
       });
     }
 
-    if (legs.length) out.set(fixtureId, { home: fx.home?.name ?? "TBD", away: fx.away?.name ?? "TBD", kickoff: fx.kickoff, legs });
+    if (legs.length)
+      out.set(fixtureId, {
+        home: fx.home?.name ?? "TBD",
+        away: fx.away?.name ?? "TBD",
+        kickoff: fx.kickoff,
+        legs,
+        grid: grids?.get(fixtureId),
+      });
   }
   return out;
 }
@@ -265,13 +277,17 @@ export const safestCombos = (legs: StrategyLeg[], sizes = COMBO_SIZES): Combo[] 
  *   value — keep the highest-EV pair with a positive combined edge and real
  *           book prices on both legs. */
 export function sameGameCombos(
-  buckets: { home: string; away: string; kickoff: string; legs: StrategyLeg[] }[],
+  buckets: { home: string; away: string; kickoff: string; legs: StrategyLeg[]; grid?: ScoreGrid }[],
   mode: StrategyMode = "safe",
   fitted?: FittedCorrelations
 ): SameGameCombo[] {
   const out: SameGameCombo[] = [];
   for (const b of buckets) {
-    const eligible = b.legs.filter((l) => sameGameEligible(l.market));
+    // a leg can pair if it's a copula category (goals/btts/corners/1H) OR a
+    // grid market (result/goals/btts) when we have this fixture's scoreline grid
+    const eligible = b.legs.filter(
+      (l) => sameGameEligible(l.market) || (b.grid && isGridMarket(l.market))
+    );
     let best: SameGameCombo | null = null;
     let bestScore = -Infinity;
 
@@ -279,10 +295,30 @@ export function sameGameCombos(
       for (let j = i + 1; j < eligible.length; j++) {
         const a = eligible[i];
         const c = eligible[j];
-        const rho = pairCorrelation(a, c, fitted);
-        if (rho == null) continue;
 
-        const jointProbability = gaussianCopulaJoint(a.probability, c.probability, rho);
+        // Exact path: both legs are goal-derived and we have the grid. Compute
+        // the joint directly from the coherent scoreline distribution — this is
+        // what lets RESULT pair with goals-over/BTTS (no clean copula axis).
+        let rho: number;
+        let exact: boolean;
+        let jointProbability: number;
+        let independentProbability: number;
+        if (b.grid && isGridMarket(a.market) && isGridMarket(c.market)) {
+          const g = gridJoint(b.grid, a, c);
+          if (!g || g.pA <= 0 || g.pB <= 0) continue;
+          rho = g.rho;
+          exact = true;
+          jointProbability = g.joint;
+          independentProbability = g.pA * g.pB; // grid marginals, consistent with the joint
+        } else {
+          const r = pairCorrelation(a, c, fitted);
+          if (r == null) continue; // e.g. result × corners has no defined coupling
+          rho = r;
+          exact = false;
+          jointProbability = gaussianCopulaJoint(a.probability, c.probability, rho);
+          independentProbability = a.probability * c.probability;
+        }
+
         const combinedOdds = a.odds * c.odds;
         const expectedValue = jointProbability * combinedOdds;
 
@@ -302,8 +338,9 @@ export function sameGameCombos(
           kickoff: b.kickoff,
           legs: [a, c],
           rho,
+          exact,
           jointProbability,
-          independentProbability: a.probability * c.probability,
+          independentProbability,
           combinedOdds,
           flatStake: 1,
           kelly: kelly(jointProbability, combinedOdds),
@@ -333,14 +370,12 @@ export function buildStrategies(
   calibratedMarkets: string[],
   mode: StrategyMode = "safe",
   fitted?: FittedCorrelations,
+  grids?: Map<number, ScoreGrid>,
   singlesLimit = SINGLES_LIMIT
 ): Matchday[] {
-  const buckets = legBuckets(rows, resolved, calibratedMarkets, mode);
+  const buckets = legBuckets(rows, resolved, calibratedMarkets, mode, grids);
 
-  const byDay = new Map<
-    string,
-    { bestLegs: StrategyLeg[]; buckets: { home: string; away: string; kickoff: string; legs: StrategyLeg[] }[] }
-  >();
+  const byDay = new Map<string, { bestLegs: StrategyLeg[]; buckets: LegBucket[] }>();
   for (const bucket of buckets.values()) {
     const key = matchdayKey(bucket.kickoff);
     const slot = byDay.get(key) ?? { bestLegs: [], buckets: [] };

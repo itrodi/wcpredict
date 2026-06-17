@@ -101,6 +101,8 @@ def main():
     all_rows = rows_a + rows_b + blended
     if all_rows:
         _stage("write_predictions", lambda: write_db.upsert_match_predictions(all_rows))
+    # scoreline grids for the frontend's exact same-game goal joints (v4.8)
+    _stage("score_grids", lambda: write_db.upsert_score_grids(match_model.score_grid_rows()))
 
     # ---- tournament sims, one per model pipeline ----
     odds_a = _stage("simulate_free", lambda: simulate.run(pipeline=config.PIPELINE_FREE))

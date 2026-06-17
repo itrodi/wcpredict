@@ -187,6 +187,14 @@ def upsert_match_predictions(rows: list[dict]):
     print(f"[write_db] upserted {len(rows)} match_predictions")
 
 
+def upsert_score_grids(rows: list[dict]):
+    if not rows:
+        return
+    for batch in chunked(rows):
+        sb().table("score_grids").upsert(batch, on_conflict="fixture_id").execute()
+    print(f"[write_db] upserted {len(rows)} score_grids")
+
+
 def upsert_tournament_odds(rows: list[dict]):
     now = _now()
     for r in rows:
