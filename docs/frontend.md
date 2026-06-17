@@ -44,6 +44,7 @@ thresholds. **No component derives labels inline.** Guarded by unit tests:
 | `/tournament` | dynamic | Monte Carlo advancement table + top-10 title-odds bar chart for the base pipeline; Realtime |
 | `/teams/[slug]` | dynamic | team header (group, confederation, Elo), advancement probability bars, full fixture path with 1X2 cards |
 | `/models` | ISR 300s | the public scoreboard from `model_scores`: Brier / log-loss / n per pipeline per market, Δ log-loss vs the market baseline (negative = beats the closing line) |
+| `/strategies` | dynamic (searchParams) | per-matchday staking board (`lib/strategies.ts`): the safest single picks (prob ≥ 50%, calibrated markets, view-owned) plus the safest accumulators (double/treble/4-fold = the K highest-probability legs), each with a flat 1u baseline and a fractional-Kelly suggested stake; **responsible-gambling warning lives on this page** |
 | `/value` | dynamic | upcoming selections sorted by \|edge\| for the selected pipeline, experimental badges, **responsible-gambling warning lives on this page** |
 | `/admin/health` | no cache | reads `ops_status`: per-vendor fixture counts vs 104, copy-paste-ready unmapped vendor names, odds credits, last refresh, the §5.0 odds-probe verdict, plus the live xmap audit |
 
