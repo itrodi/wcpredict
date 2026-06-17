@@ -3,13 +3,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { pairCorrelation, sameGameEligible } from "../lib/correlation";
 import {
   bestLegPerFixture,
   buildStrategies,
+  crossMatchCombos,
   kelly,
   KELLY_CAP,
   matchdayKey,
   safestCombos,
+  sameGameCombos,
+  type StrategyLeg,
   type StrategyRow,
 } from "../lib/strategies";
 
@@ -135,4 +139,95 @@ test("buildStrategies groups legs by matchday, sorted ascending", () => {
   assert.equal(d20.legCount, 2);
   assert.equal(d20.combos.find((c) => c.size === 2)?.legs.length, 2);
   assert.equal(days[1].combos.length, 0); // only one fixture that day → no accumulators
+});
+
+// ── correlation model ────────────────────────────────────────────────────────
+
+test("pairCorrelation: over goals + BTTS yes is strongly positive", () => {
+  const rho = pairCorrelation({ market: "ou25", selection: "over" }, { market: "btts", selection: "yes" });
+  assert.equal(rho, 0.55);
+});
+
+test("pairCorrelation: opposing directions flip the sign", () => {
+  const rho = pairCorrelation({ market: "ou25", selection: "over" }, { market: "btts", selection: "no" });
+  assert.equal(rho, -0.55);
+});
+
+test("pairCorrelation: nested same-category and unmodeled pairs are ineligible", () => {
+  assert.equal(pairCorrelation({ market: "ou15", selection: "over" }, { market: "ou25", selection: "over" }), null);
+  assert.equal(pairCorrelation({ market: "1x2", selection: "home" }, { market: "ou25", selection: "over" }), null);
+});
+
+test("sameGameEligible covers goal markets, excludes result/scoreline", () => {
+  assert.ok(sameGameEligible("ou25"));
+  assert.ok(sameGameEligible("btts"));
+  assert.ok(sameGameEligible("corners_o95"));
+  assert.ok(!sameGameEligible("1x2"));
+  assert.ok(!sameGameEligible("cs"));
+});
+
+// ── value mode ───────────────────────────────────────────────────────────────
+
+test("value mode keeps positive-edge underdogs and drops fair-odds legs", () => {
+  const rows: StrategyRow[] = [
+    // model 0.45 but priced at 2.5 → implied 0.40 → +edge, below the safe floor
+    { ...row(1, "ou25", "over", 0.45, 2.5, "free", fx(1, "2026-06-20T18:00:00Z", "A", "B")), edge: 0.05 },
+    // no book price (fair only) → excluded from value mode
+    row(2, "ou15", "over", 0.9, null, "free", fx(2, "2026-06-20T18:00:00Z", "C", "D")),
+  ];
+  const legs = bestLegPerFixture(rows, RESOLVED, ALL_CALIBRATED, "value");
+  assert.equal(legs.length, 1);
+  assert.equal(legs[0].fixtureId, 1);
+  assert.ok(legs[0].ev > 1, "kept because EV = 0.45 × 2.5 > 1");
+});
+
+test("value mode ranks accumulators by combined EV, not probability", () => {
+  const lowProbHighEv: StrategyLeg = {
+    fixtureId: 1, home: "A", away: "B", kickoff: "2026-06-20T18:00:00Z",
+    market: "ou25", selection: "over", probability: 0.5, odds: 2.4, oddsIsFair: false,
+    edge: 0.08, ev: 1.2, flatStake: 1, kelly: 0,
+  };
+  const highProbLowEv: StrategyLeg = {
+    ...lowProbHighEv, fixtureId: 2, probability: 0.85, odds: 1.2, ev: 1.02,
+  };
+  const [combo] = crossMatchCombos([highProbLowEv, lowProbHighEv], "value", [2]);
+  // first leg listed is the higher-EV one, not the higher-probability one
+  assert.equal(combo.legs[0].fixtureId, 1);
+  assert.ok(Math.abs(combo.expectedValue - 1.2 * 1.02) < 1e-9);
+});
+
+// ── same-game combos (correlation-aware) ─────────────────────────────────────
+
+test("sameGameCombos pairs correlated markets and beats the naive product", () => {
+  const bucket = {
+    home: "Brazil", away: "Serbia", kickoff: "2026-06-20T18:00:00Z",
+    legs: [
+      { fixtureId: 1, home: "Brazil", away: "Serbia", kickoff: "2026-06-20T18:00:00Z",
+        market: "ou25", selection: "over", probability: 0.65, odds: 1.6, oddsIsFair: false,
+        edge: 0.02, ev: 1.04, flatStake: 1, kelly: 0 },
+      { fixtureId: 1, home: "Brazil", away: "Serbia", kickoff: "2026-06-20T18:00:00Z",
+        market: "btts", selection: "yes", probability: 0.6, odds: 1.7, oddsIsFair: false,
+        edge: 0.02, ev: 1.02, flatStake: 1, kelly: 0 },
+    ] as StrategyLeg[],
+  };
+  const [sgc] = sameGameCombos([bucket], "safe");
+  assert.equal(sgc.rho, 0.55);
+  assert.ok(sgc.jointProbability > sgc.independentProbability, "correlation lifts the joint above 0.39");
+  assert.ok(sgc.jointProbability <= 0.6 + 1e-9, "bounded by the smaller leg");
+});
+
+test("sameGameCombos needs an eligible pair", () => {
+  const bucket = {
+    home: "A", away: "B", kickoff: "2026-06-20T18:00:00Z",
+    legs: [
+      { fixtureId: 1, home: "A", away: "B", kickoff: "2026-06-20T18:00:00Z",
+        market: "1x2", selection: "home", probability: 0.7, odds: 1.5, oddsIsFair: false,
+        edge: 0.02, ev: 1.05, flatStake: 1, kelly: 0 },
+      { fixtureId: 1, home: "A", away: "B", kickoff: "2026-06-20T18:00:00Z",
+        market: "ou25", selection: "over", probability: 0.6, odds: 1.7, oddsIsFair: false,
+        edge: 0.02, ev: 1.02, flatStake: 1, kelly: 0 },
+    ] as StrategyLeg[],
+  };
+  // 1x2 isn't same-game eligible, so no pair can form
+  assert.equal(sameGameCombos([bucket], "safe").length, 0);
 });

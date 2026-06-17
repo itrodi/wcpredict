@@ -101,6 +101,15 @@ without code changes.
   pick overall, each with a confidence %. Surfaces a corners read on *every*
   game even when none clears the banker floor. Pure model projections, not
   published/settled bets.
+- **Matchday strategies** (frontend, `lib/strategies.ts` + `/strategies`):
+  groups upcoming fixtures by match day and builds singles, cross-match
+  accumulators and same-game combos in a Safe (P-of-landing) or Value (EV at the
+  book price) mode, with flat + fractional-Kelly staking. Cross-match legs are
+  treated as independent (one leg per fixture); same-game pairs price their
+  dependence with a Gaussian copula (`lib/stats.ts`) over a conservative,
+  documented market-correlation table (`lib/correlation.ts`) — only the
+  goal-driven markets (FT/1H goal lines, BTTS, corners) are modeled. Browse
+  projections, not published/settled bets.
 - **Leak plugs** (v4.3): the picks engine suppresses a fixture entirely when a
   confirmed lineup shows ≥2 key absences for any side (rotation — the market
   reprices on the team sheet, an Elo model does not), or `fixture_incentives`
